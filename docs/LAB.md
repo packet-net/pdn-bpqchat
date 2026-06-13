@@ -182,23 +182,22 @@ routing nodes the script walks through. Use `PDN_LOG_LEVEL=debug` to see the
 > (`TestConnectScriptDial`), and the node prompts/`C`-walk were verified by hand
 > (`C GB7CCC` → `Connected to GB7CCC.\r\n…GB7CCC> `).
 >
-> **0.9.2** added the console over RHP — an `open` to a node's own callsign now
-> returns its `…> ` prompt as a `recv`. Verified: a **non-node** source callsign
-> reaches it. But a connect whose **base callsign is itself a NET/ROM node** is
-> still classified as an interlink and gets no prompt — and the chat app's
-> callsign is `<node>-4` (base = the node), so it still hits this:
+> **0.9.2** added the console over RHP, and a **recv-race in pdn-bpqchat was fixed**
+> (`internal/node`: an outbound `open`'s first `recv` could arrive before the
+> stream was registered — pdn replies to `open` only after the connect resolves
+> and a node sends its prompt immediately, so the prompt was dropped). With that,
+> the connect script now walks correctly end to end on 0.9.2: verified
+> `connect-script: matched "GB7BBB>", sent "C GB7BBB-4"` and the peer's app
+> receiving the inbound.
 >
-> | `open.local` | base is a NET/ROM node? | prompt? |
-> |---|---|---|
-> | `GB7AAA-4` | yes (`GB7AAA`) | none |
-> | `G9XXX-1`  | no | ✅ |
-> | `M0ZZZ`    | no | ✅ |
->
-> So the end-to-end app walk is **still blocked** pending a node-side change: an
-> app `open` (a normal PID-0xF0 connect) to a node should land on that node's
-> console even when the originator's base call is a node — only true PID-0xCF
-> NET/ROM interlinks should bypass the console. The lab is pinned to 0.9.2 and
-> will pass once that lands.
+> **Remaining blocker — a pdn-node bug:** a node-prompt connect to a *local* app
+> (`C <call>-SSID`, where the SSID is a registered RHP app) connects then
+> **immediately disconnects**, so the app's banner never returns and the `*RTL`
+> handshake can't complete. Minimal repro (one node, no ports): an RHP app binds
+> `GB7BBB-4` (it logs the `accept`), then the node console `C GB7BBB-4` prints
+> `Connecting to GB7BBB-4 on local… / Connected to GB7BBB-4. / Disconnected from
+> GB7BBB-4.` with no app data bridged. The multi-hop lab passes once the local-app
+> bridge stays up.
 
 This is the mechanism for scaling chat peering over an AXUDP/NET-ROM backbone
 (`design.md` §W6).

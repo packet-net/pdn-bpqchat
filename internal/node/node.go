@@ -47,11 +47,43 @@ type Link struct {
 	client  *rhp.Client
 	ctx     context.Context // the current attachment's context (for spawned children)
 	streams map[int]*rhpStream
+	// pendingRecv / pendingClosed buffer pushes that arrive for a handle BEFORE its
+	// stream is registered. An outbound open's first recv can race ahead of stream
+	// registration: pdn replies to `open` only after the connect resolves (deviation
+	// D4) and a node sends its prompt/banner immediately on connect, so the recv can
+	// be dispatched (same read-loop goroutine) before dialRFPeerOnce registers the
+	// stream. Without this buffer that first frame — e.g. the node prompt a connect
+	// script waits for — is lost.
+	pendingRecv   map[int][][]byte
+	pendingClosed map[int]bool
 }
 
 // New builds the link.
 func New(opts Options, hub *chat.Hub, router *peer.Router, log *slog.Logger) *Link {
-	return &Link{opts: opts, hub: hub, router: router, log: log, streams: map[int]*rhpStream{}}
+	return &Link{
+		opts: opts, hub: hub, router: router, log: log,
+		streams:       map[int]*rhpStream{},
+		pendingRecv:   map[int][][]byte{},
+		pendingClosed: map[int]bool{},
+	}
+}
+
+// registerStream binds a freshly-opened/accepted handle to its stream, draining
+// any pushes that raced ahead of registration (see Link.pendingRecv).
+func (l *Link) registerStream(handle int, s *rhpStream) {
+	l.mu.Lock()
+	l.streams[handle] = s
+	pending := l.pendingRecv[handle]
+	delete(l.pendingRecv, handle)
+	closed := l.pendingClosed[handle]
+	delete(l.pendingClosed, handle)
+	l.mu.Unlock()
+	for _, d := range pending {
+		s.feed(d)
+	}
+	if closed {
+		s.markClosed()
+	}
 }
 
 // Run keeps the attachment up until ctx is cancelled, reconnecting with backoff.
@@ -127,9 +159,9 @@ func (l *Link) OnAccept(_, child int, remote, _, _ string) {
 	l.log.Info("inbound connection", "from", remote, "handle", child)
 	l.mu.Lock()
 	client, ctx := l.client, l.ctx
-	stream := newRhpStream(client, child)
-	l.streams[child] = stream
 	l.mu.Unlock()
+	stream := newRhpStream(client, child)
+	l.registerStream(child, stream)
 	if ctx == nil {
 		return
 	}
@@ -142,10 +174,14 @@ func (l *Link) OnAccept(_, child int, remote, _, _ string) {
 func (l *Link) OnRecv(handle int, data []byte) {
 	l.mu.Lock()
 	s := l.streams[handle]
-	l.mu.Unlock()
-	if s != nil {
-		s.feed(data)
+	if s == nil {
+		// Raced ahead of stream registration — buffer it (see Link.pendingRecv).
+		l.pendingRecv[handle] = append(l.pendingRecv[handle], append([]byte(nil), data...))
+		l.mu.Unlock()
+		return
 	}
+	l.mu.Unlock()
+	s.feed(data)
 }
 
 func (l *Link) OnStatus(int, int) {}
@@ -154,6 +190,9 @@ func (l *Link) OnClose(handle int) {
 	l.mu.Lock()
 	s := l.streams[handle]
 	delete(l.streams, handle)
+	if s == nil {
+		l.pendingClosed[handle] = true // close raced ahead of registration
+	}
 	l.mu.Unlock()
 	if s != nil {
 		s.markClosed()
@@ -230,9 +269,7 @@ func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, p config.
 		return err
 	}
 	stream := newRhpStream(client, handle)
-	l.mu.Lock()
-	l.streams[handle] = stream
-	l.mu.Unlock()
+	l.registerStream(handle, stream)
 	defer func() {
 		l.mu.Lock()
 		delete(l.streams, handle)
