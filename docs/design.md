@@ -422,7 +422,12 @@ traffic; a diamond proves two-path dedup; a real TCP link propagates end to end.
 demux), outbound RF peer dials via RHP `open` (an `io.ReadWriteCloser` over an RHP
 child unifies user/peer/transport), multiple simultaneous peers (the Router is
 N-peer by construction), keepalive/timeout/backoff reconnect, and stateTell
-resync on link-up. Config: `PDN_BPQCHAT_PEERS=CALL@host:port,rf:CALL`.
+resync on link-up. Config: `PDN_BPQCHAT_PEERS=CALL@host:port,rf:CALL`. The
+**accept** side of the IP transport (pdn↔pdn links with no intervening BPQ node)
+is `PDN_BPQCHAT_PEER_LISTEN=host:port` — a raw TCP accept has no AX.25 callsign,
+so the inbound link learns the peer's identity from the first control record it
+sends (`peer.ServeInboundIP`). The 3-node cycle is validated on the wire with two
+pdn nodes + a real LinBPQ — see `docs/LAB.md`.
 
 **W7 — packaging:** the self-contained `.deb` app package (amd64/arm64/armhf),
 default-off, code-vs-state split — see `docs/release-pipeline.md`.

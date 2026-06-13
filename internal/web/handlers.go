@@ -32,7 +32,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	call := IdentityFromRequest(r).viewerCall()
+	call := s.viewerCall(r)
 	key := s.presence.enter(call)
 	defer s.presence.leave(call)
 
@@ -124,7 +124,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	call := IdentityFromRequest(r).viewerCall()
+	call := s.viewerCall(r)
 	key := chat.UserKey{Call: call, Node: s.hub.OurNode()}
 	text := strings.TrimSpace(readField(r, "text"))
 	if text == "" {
@@ -149,7 +149,7 @@ func (s *Server) handleTopic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	call := IdentityFromRequest(r).viewerCall()
+	call := s.viewerCall(r)
 	key := chat.UserKey{Call: call, Node: s.hub.OurNode()}
 	name := strings.TrimSpace(readField(r, "topic"))
 	if name == "" {

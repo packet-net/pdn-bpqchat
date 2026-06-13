@@ -1,0 +1,68 @@
+# Tier-2 CYCLE lab (docs/LAB.md): a 3-node chat-node cycle proven on the wire.
+#
+#   pdnA(M0LTE-4) ──IP──> pdnB(G0XYZ-4)        the two pdn-bpqchat apps run on the
+#         \                    /                host; each links BPQ over RF (RHP→
+#          rf                rf                 AXUDP) AND link each other over the
+#            \                /                 pdn↔pdn IP transport, closing the
+#             LinBPQ (GB7PDN-2)                 triangle. One message must reach
+#                                               every node exactly once — no storm.
+#
+# This compose brings up the packet plane (BPQ + the two pdn nodes). The two
+# pdn-bpqchat apps run on the host — see docs/LAB.md for the exact env.
+#
+#   docker compose -f docker/lab-tier2/cycle/compose.cycle.yml up -d --wait
+name: pdnbpqchat-cycle
+
+services:
+  linbpq:
+    image: m0lte/linbpq:latest
+    container_name: pdnbpqchat-cyc-linbpq
+    restart: unless-stopped
+    command: ["chat"]
+    volumes:
+      - ./linbpq/bpq32.cfg:/data/bpq32.cfg:ro
+      - ./linbpq/chatconfig.cfg:/data/chatconfig.cfg:ro
+    ports:
+      - "127.0.0.1:8010:8010"
+      - "127.0.0.1:8008:8008"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8008 && exec 3<&-"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+      start_period: 20s
+    networks:
+      lab: { ipv4_address: 172.31.1.10 }
+
+  node-a:
+    image: m0lte/packet.net:latest
+    container_name: pdnbpqchat-cyc-node-a
+    restart: unless-stopped
+    depends_on:
+      linbpq: { condition: service_healthy }
+    volumes:
+      - ./node-m0lte.yaml:/etc/packetnet/packetnet.yaml:ro
+    ports:
+      - "127.0.0.1:9000:9000"   # pdnA RHP
+    networks:
+      lab: { ipv4_address: 172.31.1.20 }
+
+  node-b:
+    image: m0lte/packet.net:latest
+    container_name: pdnbpqchat-cyc-node-b
+    restart: unless-stopped
+    depends_on:
+      linbpq: { condition: service_healthy }
+    volumes:
+      - ./node-g0xyz.yaml:/etc/packetnet/packetnet.yaml:ro
+    ports:
+      - "127.0.0.1:9001:9000"   # pdnB RHP
+    networks:
+      lab: { ipv4_address: 172.31.1.21 }
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.1.0/24

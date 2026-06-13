@@ -8,11 +8,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
 	"github.com/m0lte/pdn-bpqchat/internal/config"
@@ -27,6 +29,38 @@ import (
 var version = "dev"
 
 func sprintfMain(format string, a ...any) string { return fmt.Sprintf(format, a...) }
+
+// servePeerListener accepts inbound IP peer links until ctx is cancelled. Each
+// accepted connection is handed to peer.ServeInboundIP, which runs the BPQ chat
+// node-link handshake and bridges the peer to the shared router/hub.
+func servePeerListener(ctx context.Context, addr, ourNode string, router *peer.Router, hub *chat.Hub, log *slog.Logger) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		log.Error("peer listener failed to bind", "addr", addr, "err", err)
+		return
+	}
+	log.Info("inbound peer listener listening", "addr", ln.Addr().String())
+	go func() { <-ctx.Done(); _ = ln.Close() }()
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return // listener closed on shutdown
+			}
+			log.Warn("peer accept failed", "err", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		go func() {
+			log.Info("inbound IP peer connection", "from", conn.RemoteAddr().String())
+			if err := peer.ServeInboundIP(ctx, conn, router, hub, ourNode,
+				func(f string, a ...any) { log.Info("peer", "msg", sprintfMain(f, a...)) }); err != nil {
+				log.Info("inbound IP peer ended", "from", conn.RemoteAddr().String(), "err", err)
+			}
+		}()
+	}
+}
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -100,6 +134,17 @@ func main() {
 			log.Info("starting peer link", "peer", p.Call, "addr", p.Addr)
 			peer.DialAndServe(ctx, p.Addr, p.Call, cfg.ChatCallsign(), router, hub,
 				func(f string, a ...any) { log.Info("peer", "msg", sprintfMain(f, a...)) })
+		}()
+	}
+
+	// Inbound IP peer listener — the accept side of the pdn↔pdn IP transport,
+	// enabling pdn-to-pdn mesh links (and the docs/LAB.md tier-2 cycle test)
+	// without an intervening BPQ node. Off unless PDN_BPQCHAT_PEER_LISTEN is set.
+	if cfg.PeerListen != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			servePeerListener(ctx, cfg.PeerListen, cfg.ChatCallsign(), router, hub, log)
 		}()
 	}
 

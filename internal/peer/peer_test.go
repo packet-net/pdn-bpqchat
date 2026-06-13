@@ -256,3 +256,66 @@ func TestLinkHandshakeAndPropagation(t *testing.T) {
 		return false
 	})
 }
+
+// TestInboundIPLink exercises the accept side of the pdn↔pdn IP transport: a
+// dialer links to a ServeInboundIP listener that has NO callsign from the
+// transport and must learn the peer's identity from the first control record.
+func TestInboundIPLink(t *testing.T) {
+	aConn, bConn := tcpPair(t)
+
+	a := newTestNode("GB7AAA") // the dialer
+	b := newTestNode("GB7BBB") // the listener
+	defer a.router.Close()
+	defer b.router.Close()
+
+	// A local user on the dialer, carried to the listener by stateTell on link-up.
+	akey := chat.UserKey{Call: "G8PZT", Node: "GB7AAA"}
+	a.hub.Join(chat.User{Call: akey.Call, Origin: chat.Origin{Node: "GB7AAA", Local: true}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour})
+	go la.Run(ctx)
+	// The listener learns "GB7AAA" from the dialer's first record — not from any
+	// transport-supplied callsign.
+	go func() { _ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB", nil) }()
+
+	// The listener must have learned the peer and received A's user.
+	waitFor(t, func() bool { _, ok := b.hub.User(akey); return ok })
+
+	a.hub.Post(context.Background(), akey, "inbound ip works")
+	waitFor(t, func() bool {
+		msgs, _ := b.hub.History(context.Background(), "General", time.Time{}, 10)
+		for _, m := range msgs {
+			if strings.Contains(m.Text, "inbound ip works") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestJoinAfterDataSetsName proves a join record's name is applied even when a
+// data record already made the user present (the name would otherwise be lost
+// because ensureUser early-returns for an existing user).
+func TestJoinAfterDataSetsName(t *testing.T) {
+	n := newTestNode("GB7AAA")
+	defer n.router.Close()
+	key := chat.UserKey{Call: "G8PZT", Node: "GB7BBB"}
+
+	// A data record from a remote node arrives first: the user is created with no name.
+	dRec, _ := Decode(encodeData("GB7BBB", "G8PZT", "hello mesh"))
+	n.router.Ingest(dRec, "GB7BBB")
+	if u, ok := n.hub.User(key); !ok || u.Name != "" {
+		t.Fatalf("after data: present=%v name=%q (want present, empty name)", ok, u.Name)
+	}
+
+	// Then a join carrying the name — the name must now land.
+	jRec, _ := Decode(encodeJoin("GB7BBB", "G8PZT", "John Doe", "London"))
+	n.router.Ingest(jRec, "GB7BBB")
+	waitFor(t, func() bool {
+		u, ok := n.hub.User(key)
+		return ok && u.Name == "John Doe" && u.QTH == "London"
+	})
+}

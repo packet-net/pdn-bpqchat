@@ -100,6 +100,15 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 	if err := l.handshake(br); err != nil {
 		return fmt.Errorf("peer %s: handshake: %w", l.peerCall, err)
 	}
+	return l.serve(ctx, br, nil)
+}
+
+// serve runs the post-handshake link lifecycle: register with the router, tell
+// the peer our local users, keep the link alive, and relay records until the
+// transport closes. pending, if non-nil, is a record already read during the
+// handshake (e.g. the identity-bearing first record of an inbound IP link) and
+// is processed before the read loop so it is not lost.
+func (l *Link) serve(ctx context.Context, br *bufio.Reader, pending *Record) error {
 	l.lastSeen = time.Now()
 	l.router.Add(l)
 	defer l.router.Remove(l.id())
@@ -113,6 +122,10 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 	defer cancel()
 	go l.keepaliveLoop(ctx)
 
+	if pending != nil {
+		l.handleRecord(*pending)
+	}
+
 	// Read loop.
 	lines := make(chan string, 64)
 	go l.readLines(br, lines, cancel)
@@ -125,6 +138,69 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 				return io.EOF
 			}
 			l.handle(line)
+		}
+	}
+}
+
+// ServeInboundIP serves an inbound pdn↔pdn IP peer link over rw (the documented
+// telnet/IP node-link transport, design.md §9 — the dial side is DialAndServe).
+// A raw TCP accept carries no AX.25 callsign the way an RHP inbound does, so we
+// learn the peer's chat callsign from the first control record it sends: the
+// dialer emits its keepalive K right after *RTL (before it waits for our OK), and
+// that record carries the originating node in field 0 (proto.go). ourNode is our
+// own chat callsign.
+func ServeInboundIP(ctx context.Context, rw io.ReadWriteCloser, router *Router, hub *chat.Hub, ourNode string, logf func(string, ...any)) error {
+	br := bufio.NewReader(rw)
+	if _, err := io.WriteString(rw, banner()+"\r"); err != nil {
+		return err
+	}
+	if err := readUntilLine(br, IsRTL); err != nil {
+		return err
+	}
+	first, err := readFirstRecord(br)
+	if err != nil {
+		return err
+	}
+	if first.Node == "" {
+		return fmt.Errorf("inbound IP peer: first record carried no node callsign")
+	}
+	l := NewLink(rw, router, hub, Config{
+		PeerCall: first.Node, OurNode: ourNode, Outbound: false, Greeted: true, Log: logf,
+	})
+	// Now that we know who they are, complete the handshake: OK + our keepalive.
+	if err := l.sendRaw("OK"); err != nil {
+		return err
+	}
+	if err := l.sendKeepalive(); err != nil {
+		return err
+	}
+	l.log("inbound IP peer linked: %s", first.Node)
+	return l.serve(ctx, br, &first)
+}
+
+// readUntilLine reads lines until pred matches one (package-level twin of the
+// Link.readUntil method, for use before a Link exists).
+func readUntilLine(br *bufio.Reader, pred func(string) bool) error {
+	for {
+		line, err := readLine(br)
+		if err != nil {
+			return err
+		}
+		if pred(line) {
+			return nil
+		}
+	}
+}
+
+// readFirstRecord reads lines until one decodes as a control record.
+func readFirstRecord(br *bufio.Reader) (Record, error) {
+	for {
+		line, err := readLine(br)
+		if err != nil {
+			return Record{}, err
+		}
+		if rec, ok := Decode(line); ok {
+			return rec, nil
 		}
 	}
 }
@@ -194,6 +270,11 @@ func (l *Link) handle(line string) {
 	if !ok {
 		return
 	}
+	l.handleRecord(rec)
+}
+
+// handleRecord processes one already-decoded control record.
+func (l *Link) handleRecord(rec Record) {
 	l.lastSeen = time.Now()
 	switch rec.Type {
 	case IDKeepalive, IDPoll:

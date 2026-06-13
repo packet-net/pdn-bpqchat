@@ -187,6 +187,13 @@ func (r *Router) apply(rec Record, fromID string) {
 	switch rec.Type {
 	case IDJoin:
 		r.ensureUser(rec, fromID)
+		// A join carries name/qth too; apply them even if the user was already
+		// made present by an earlier data record (ensureUser early-returns then),
+		// so the name still lands. Skip empty ("?") fields so a later bare join
+		// can't clobber a known name.
+		if name, qth := unDash(rec.Field(0)), unDash(rec.Field(1)); name != "" || qth != "" {
+			r.hub.SetInfo(key, name, qth)
+		}
 	case IDLeave:
 		r.hub.Leave(key)
 	case IDUser:

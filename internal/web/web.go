@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
@@ -37,34 +38,47 @@ func IdentityFromRequest(r *http.Request) Identity {
 	}
 }
 
-// viewerCall is the chat callsign for a web request. When auth is off (no
-// injected user) the local node owner is the viewer — we use "SYSOP" so the
-// owner is a real participant rather than anonymous.
-func (id Identity) viewerCall() string {
-	if id.User != "" {
-		return id.User
+// viewerCall is the chat callsign for a web request. The gateway injects the
+// authenticated viewer (X-Pdn-User); when auth is off (no injected user) the
+// local node owner is the viewer, and we use the node's own callsign — a real,
+// on-air-valid call (not a placeholder), so the owner appears as a proper
+// participant to linked BPQ nodes rather than a non-callsign like "SYSOP".
+func (s *Server) viewerCall(r *http.Request) string {
+	if u := IdentityFromRequest(r).User; u != "" {
+		return u
 	}
-	return "SYSOP"
+	return s.ownerCall
+}
+
+// baseCall strips the AX.25 SSID suffix (BASE-SSID) to yield the operator's
+// bare callsign. A callsign base never contains a hyphen, so cut at the first.
+func baseCall(callsign string) string {
+	if i := strings.IndexByte(callsign, '-'); i >= 0 {
+		return callsign[:i]
+	}
+	return callsign
 }
 
 // Server is the loopback web chat.
 type Server struct {
-	port     int
-	callsign string
-	hub      *chat.Hub
-	log      *slog.Logger
-	srv      *http.Server
-	presence *presence
+	port      int
+	callsign  string
+	ownerCall string // node base call (chat callsign minus SSID) — the owner's on-air identity
+	hub       *chat.Hub
+	log       *slog.Logger
+	srv       *http.Server
+	presence  *presence
 }
 
 // New builds the web server bound to the chat hub.
 func New(port int, callsign string, hub *chat.Hub, log *slog.Logger) *Server {
 	s := &Server{
-		port:     port,
-		callsign: callsign,
-		hub:      hub,
-		log:      log,
-		presence: newPresence(hub),
+		port:      port,
+		callsign:  callsign,
+		ownerCall: baseCall(callsign),
+		hub:       hub,
+		log:       log,
+		presence:  newPresence(hub),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)

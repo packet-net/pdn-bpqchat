@@ -42,6 +42,10 @@ type Config struct {
 	Peers []Peer
 	// RFPeers are outbound peer chat callsigns dialled over AX.25 via RHP (W6).
 	RFPeers []string
+	// PeerListen, if set (PDN_BPQCHAT_PEER_LISTEN, e.g. "127.0.0.1:18094"), is the
+	// TCP address the node accepts inbound IP peer links on (the accept side of the
+	// pdn↔pdn IP transport). Empty disables inbound IP peering.
+	PeerListen string
 }
 
 // Peer is a configured outbound peer chat node reachable over a TCP node-link
@@ -73,6 +77,7 @@ func Load() (*Config, error) {
 		RHPPass:      os.Getenv("PDN_RHP_PASS"),
 		StateDir:     envOr("PDN_APP_STATE", DefaultState),
 		WebPort:      envIntOr("PDN_WEB_PORT", DefaultWebPort),
+		PeerListen:   strings.TrimSpace(os.Getenv("PDN_BPQCHAT_PEER_LISTEN")),
 	}
 	if c.NodeCallsign == "" {
 		return nil, fmt.Errorf("config: PDN_NODE_CALLSIGN is not set (the supervisor must provide the node callsign)")

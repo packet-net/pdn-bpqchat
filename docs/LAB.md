@@ -108,11 +108,55 @@ Link establishment — a complete BPQ chat node-link handshake in LinBPQ's
   (`SYSOP at PDNCHT [General]`); the LinBPQ user shows in pdn's `GET /users`
   (`{"call":"GB7PDN","node":"GB7PDN-2"}`).
 
-### Still to drive
+### The 3-node cycle — no loop-storm on the wire (validated 2026-06-13)
 
-The 3-node cycle (pdn ↔ BPQ ↔ pdn) loop-storm check on the wire — add a second
-pdn-bpqchat instance peering the same LinBPQ and confirm no storm (the algorithm
-is proven by the unit test `TestCycleNoStorm`; design.md §5).
+A real triangle of chat nodes, so a message that can circulate must not storm:
+
+```
+pdnA(M0LTE-4) ──IP──> pdnB(G0XYZ-4)
+       \                  /
+        rf            rf            all three edges are real chat links
+          \            /
+        LinBPQ (GB7PDN-2)
+```
+
+pdnA↔BPQ and pdnB↔BPQ are RF (each pdn has its own node → AXUDP → the shared
+LinBPQ AXIP port); the pdnA↔pdnB edge is the **pdn↔pdn IP transport**: pdnB
+listens (`PDN_BPQCHAT_PEER_LISTEN`) and pdnA dials it (`…@host:port`). The packet
+plane (BPQ + two pdn nodes) is `docker/lab-tier2/cycle/`; the two apps run on the
+host.
+
+```sh
+docker compose -f docker/lab-tier2/cycle/compose.cycle.yml up -d --wait
+go build -o /tmp/pdn-bpqchat ./cmd/...
+
+# pdnB — links BPQ over RF and ACCEPTS pdnA's IP peer link:
+PDN_NODE_CALLSIGN=G0XYZ PDN_RHP_PORT=9001 PDN_APP_STATE=/tmp/stateB PDN_WEB_PORT=18095 \
+PDN_BPQCHAT_PEERS=rf:GB7PDN-2 PDN_BPQCHAT_PEER_LISTEN=127.0.0.1:18094 /tmp/pdn-bpqchat &
+
+# pdnA — links BPQ over RF and DIALS pdnB over IP (closing the triangle):
+PDN_NODE_CALLSIGN=M0LTE PDN_RHP_PORT=9000 PDN_APP_STATE=/tmp/stateA PDN_WEB_PORT=18093 \
+PDN_BPQCHAT_PEERS="rf:GB7PDN-2,G0XYZ-4@127.0.0.1:18094" /tmp/pdn-bpqchat &
+
+# inject ONE message and count copies everywhere:
+curl -sX POST 127.0.0.1:18093/send -H 'Content-Type: application/json' -d '{"text":"CYCLE-PROBE-42"}'
+```
+
+Observed: pdnA `/history` = 1 copy, pdnB `/history` = 1 copy (pdnB received it via
+*both* BPQ and the direct IP link, deduped to one). At BPQ — the cycle vertex —
+the chat log shows it arriving by two paths and BPQ's own dedup catching it:
+
+```
+<G0XYZ-4  DM0LTE-4 M0LTE CYCLE-PROBE-42        (relayed via pdnB)
+<M0LTE-4  DM0LTE-4 M0LTE CYCLE-PROBE-42        (direct from pdnA)
+?         Duplicate Message From M0LTE CYCLE-PROBE-42 suppressed
+```
+
+Exactly one delivery per node, bounded traffic — the wire confirmation of the
+`TestCycleNoStorm` guarantee (design.md §5), now across a heterogeneous cycle
+(two pdn nodes + a real LinBPQ).
+
+Teardown: `docker compose -f docker/lab-tier2/cycle/compose.cycle.yml down -v`.
 
 ### The .deb alternative
 
