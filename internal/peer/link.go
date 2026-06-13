@@ -35,6 +35,7 @@ type Link struct {
 	log      func(string, ...any)
 
 	keepaliveEvery time.Duration
+	connectPace    time.Duration
 
 	wmu      sync.Mutex
 	lastSeen time.Time
@@ -42,13 +43,14 @@ type Link struct {
 
 // Config configures a Link.
 type Config struct {
-	PeerCall  string               // the peer node's chat callsign
-	OurNode   string               // our chat callsign
-	Version   string               // our version string (advertised in keepalives)
-	Outbound  bool                 // true if we dialled the peer
-	Greeted   bool                 // inbound only: the demux already sent the banner and read *RTL
-	Log       func(string, ...any) // optional
-	Keepalive time.Duration        // optional override (tests use a short value)
+	PeerCall    string               // the peer node's chat callsign
+	OurNode     string               // our chat callsign
+	Version     string               // our version string (advertised in keepalives)
+	Outbound    bool                 // true if we dialled the peer
+	Greeted     bool                 // inbound only: the demux already sent the banner and read *RTL
+	Log         func(string, ...any) // optional
+	Keepalive   time.Duration        // optional override (tests use a short value)
+	ConnectPace time.Duration        // optional connect-script pacing override (tests use a short value)
 }
 
 // NewLink builds a link over rw, bridging it to router/hub.
@@ -62,6 +64,9 @@ func NewLink(rw io.ReadWriteCloser, router *Router, hub *chat.Hub, cfg Config) *
 	if cfg.Version == "" {
 		cfg.Version = "pdn"
 	}
+	if cfg.ConnectPace <= 0 {
+		cfg.ConnectPace = ConnectScriptPace
+	}
 	return &Link{
 		peerCall:       strings.ToUpper(cfg.PeerCall),
 		ourNode:        strings.ToUpper(cfg.OurNode),
@@ -73,6 +78,7 @@ func NewLink(rw io.ReadWriteCloser, router *Router, hub *chat.Hub, cfg Config) *
 		greeted:        cfg.Greeted,
 		log:            cfg.Log,
 		keepaliveEvery: cfg.Keepalive,
+		connectPace:    cfg.ConnectPace,
 	}
 }
 
@@ -101,6 +107,36 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 		return fmt.Errorf("peer %s: handshake: %w", l.peerCall, err)
 	}
 	return l.serve(ctx, br, nil)
+}
+
+// ConnectScriptPace is the delay before each connect-script command, giving the
+// previous hop time to connect and present its node prompt before the next
+// command is sent. Connect scripts don't parse prompts (a node prompt has no
+// line terminator, so it can't be read as a line); they pace the commands and
+// rely on the outbound handshake's readUntil(banner) to skip all the
+// intermediate node chatter once the final hop lands on the chat app.
+const ConnectScriptPace = 1500 * time.Millisecond
+
+// RunWithScript walks an outbound connect script before the chat handshake: the
+// caller has already opened a connection to the FIRST hop (e.g. a remote node's
+// prompt); each command in script is then sent, paced, to walk onward, the last
+// landing on the peer's chat app. The normal outbound handshake follows — its
+// readUntil(banner) skips the node welcomes/prompts/"Connected" lines the walk
+// produced. An empty script behaves like Run (a direct dial).
+func (l *Link) RunWithScript(ctx context.Context, script []string) error {
+	br := bufio.NewReader(l.rw)
+	for _, cmd := range script {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(l.connectPace):
+		}
+		if _, err := io.WriteString(l.rw, cmd+"\r"); err != nil {
+			return err
+		}
+		l.log("connect-script: sent %q to reach %s", cmd, l.peerCall)
+	}
+	return l.RunWithReader(ctx, br)
 }
 
 // serve runs the post-handshake link lifecycle: register with the router, tell

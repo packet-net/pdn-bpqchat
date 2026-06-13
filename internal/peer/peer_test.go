@@ -1,7 +1,9 @@
 package peer
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -289,6 +291,55 @@ func TestInboundIPLink(t *testing.T) {
 		msgs, _ := b.hub.History(context.Background(), "General", time.Time{}, 10)
 		for _, m := range msgs {
 			if strings.Contains(m.Text, "inbound ip works") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestConnectScriptDial proves an outbound connect script: the dialer opens to a
+// "node prompt" (the server), sends "C GB7BBB-4" to be connected through to the
+// chat app, and the BPQ node-link handshake then completes over that session —
+// exactly the PDN ≥0.9.0 node-prompt-to-local-app path.
+func TestConnectScriptDial(t *testing.T) {
+	aConn, bConn := tcpPair(t)
+
+	a := newTestNode("GB7AAA") // dialer
+	b := newTestNode("GB7BBB") // the node + its chat app
+	defer a.router.Close()
+	defer b.router.Close()
+
+	akey := chat.UserKey{Call: "G8PZT", Node: "GB7AAA"}
+	a.hub.Join(chat.User{Call: akey.Call, Origin: chat.Origin{Node: "GB7AAA", Local: true}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Server side: act as the node prompt — read the "C GB7BBB-4" connect command,
+	// emit a little node chatter, then become the chat node (ServeInboundIP greets
+	// + runs the link). The handshake's readUntil(banner) must skip the chatter.
+	go func() {
+		br := bufio.NewReader(bConn)
+		line, err := readLine(br)
+		if err != nil || !strings.EqualFold(strings.TrimSpace(line), "C GB7BBB-4") {
+			t.Errorf("server got connect cmd %q, want \"C GB7BBB-4\"", line)
+			return
+		}
+		_, _ = io.WriteString(bConn, "Connected to GB7BBB-4\r")
+		_ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB-4", nil)
+	}()
+
+	// Dialer: PeerCall is the chat callsign GB7BBB-4; the script walks to it.
+	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB-4", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour, ConnectPace: 20 * time.Millisecond})
+	go func() { _ = la.RunWithScript(ctx, []string{"C GB7BBB-4"}) }()
+
+	waitFor(t, func() bool { _, ok := b.hub.User(akey); return ok })
+	a.hub.Post(context.Background(), akey, "reached via script")
+	waitFor(t, func() bool {
+		msgs, _ := b.hub.History(context.Background(), "General", time.Time{}, 10)
+		for _, m := range msgs {
+			if strings.Contains(m.Text, "reached via script") {
 				return true
 			}
 		}

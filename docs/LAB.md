@@ -158,6 +158,25 @@ Exactly one delivery per node, bounded traffic — the wire confirmation of the
 
 Teardown: `docker compose -f docker/lab-tier2/cycle/compose.cycle.yml down -v`.
 
+### Reaching a peer across the network — connect scripts
+
+The cycle above keeps every peer one hop away because a direct `rf:CALL` opens an
+AX.25 SABM out the node's first port only. To peer with a chat node that is
+several hops across a packet network, use a **connect script**
+(`PDN_BPQCHAT_PEERS=via:…`) — open to a node we can reach and walk node-prompt
+`C` commands to it, the last connecting to the peer's chat app:
+
+```sh
+# two-node shortcut: open to G0BBB's node prompt, then "C G0BBB-4"
+PDN_BPQCHAT_PEERS=via:G0BBB-4
+# explicit multi-hop: peer GB7RDG-1, open GB7STH, then walk on
+PDN_BPQCHAT_PEERS="via:GB7RDG-1|GB7STH|C RDGCHT"
+```
+
+The node-prompt→local-app connect (the final `C G0BBB-4`) needs **PDN ≥0.9.0**.
+This is the mechanism for scaling chat peering over an AXUDP/NET-ROM backbone
+(`design.md` §W6); the unit test `TestConnectScriptDial` proves the walk.
+
 ### The .deb alternative
 
 Instead of running the host binary, install the package into the node

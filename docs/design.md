@@ -429,6 +429,18 @@ so the inbound link learns the peer's identity from the first control record it
 sends (`peer.ServeInboundIP`). The 3-node cycle is validated on the wire with two
 pdn nodes + a real LinBPQ — see `docs/LAB.md`.
 
+**Reaching a peer across the network — connect scripts.** A direct `rf:CALL`
+opens an AX.25 SABM straight out the node's first port, so it only reaches a peer
+one hop away. To reach a chat node across a multi-hop packet network, peer with a
+**connect script** (`PDN_BPQCHAT_PEERS=via:…`), mirroring BPQ's OtherChatNodes
+scripts: open to a node we can reach, then type node-prompt `C` commands to walk
+onward, the last landing on the peer's chat app (PDN ≥0.9.0 connects the node
+prompt to a local app by its SSID). `via:G0BBB-4` is the two-node shortcut —
+open to `G0BBB`'s node prompt, then `C G0BBB-4`; `via:PEER|OPENTARGET|CMD|CMD…`
+is the explicit multi-hop form. The script isn't prompt-parsed (a node prompt has
+no line terminator); it paces the commands and lets the outbound handshake's
+`readUntil(banner)` skip the intervening node chatter (`Link.RunWithScript`).
+
 **W7 — packaging:** the self-contained `.deb` app package (amd64/arm64/armhf),
 default-off, code-vs-state split — see `docs/release-pipeline.md`.
 

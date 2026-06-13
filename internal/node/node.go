@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
+	"github.com/m0lte/pdn-bpqchat/internal/config"
 	"github.com/m0lte/pdn-bpqchat/internal/peer"
 	"github.com/m0lte/pdn-bpqchat/internal/rhp"
 	"github.com/m0lte/pdn-bpqchat/internal/session"
@@ -31,7 +32,7 @@ type Options struct {
 	User         string
 	Pass         string
 	ChatCallsign string
-	RFPeers      []string // peer chat callsigns to dial over AX.25 via RHP
+	RFPeers      []config.RFPeer // peer chat nodes to dial over AX.25 via RHP (optionally via a connect script)
 }
 
 // Link is the resilient RHP attachment that serves inbound RF users and peers
@@ -203,12 +204,12 @@ func (l *Link) serveInbound(ctx context.Context, rw io.ReadWriteCloser, remote s
 
 // dialRFPeer maintains an outbound AX.25 peer link via RHP open, with backoff,
 // while ctx is live.
-func (l *Link) dialRFPeer(ctx context.Context, client *rhp.Client, peerCall string) {
+func (l *Link) dialRFPeer(ctx context.Context, client *rhp.Client, p config.RFPeer) {
 	const initial, max = 5 * time.Second, 120 * time.Second
 	backoff := initial
 	for ctx.Err() == nil {
-		if err := l.dialRFPeerOnce(ctx, client, peerCall); err != nil && ctx.Err() == nil {
-			l.log.Info("RF peer link ended", "peer", peerCall, "err", err, "retry", backoff)
+		if err := l.dialRFPeerOnce(ctx, client, p); err != nil && ctx.Err() == nil {
+			l.log.Info("RF peer link ended", "peer", p.PeerCall, "err", err, "retry", backoff)
 		}
 		select {
 		case <-ctx.Done():
@@ -221,8 +222,10 @@ func (l *Link) dialRFPeer(ctx context.Context, client *rhp.Client, peerCall stri
 	}
 }
 
-func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, peerCall string) error {
-	handle, err := client.Open(ctx, l.opts.ChatCallsign, peerCall, "")
+func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, p config.RFPeer) error {
+	// Open to the first hop: the peer itself for a direct dial, or the node we
+	// walk a connect script through (p.OpenTo) for a multi-hop peer.
+	handle, err := client.Open(ctx, l.opts.ChatCallsign, p.OpenTo, p.OpenPort)
 	if err != nil {
 		return err
 	}
@@ -237,10 +240,14 @@ func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, peerCall 
 		_ = stream.Close()
 	}()
 
-	l.log.Info("dialled RF peer; linking", "peer", peerCall)
 	link := peer.NewLink(stream, l.router, l.hub, peer.Config{
-		PeerCall: peerCall, OurNode: l.opts.ChatCallsign, Outbound: true, Log: l.slogf(),
+		PeerCall: p.PeerCall, OurNode: l.opts.ChatCallsign, Outbound: true, Log: l.slogf(),
 	})
+	if len(p.Script) > 0 {
+		l.log.Info("dialled RF node; walking connect script to peer", "open", p.OpenTo, "peer", p.PeerCall, "steps", len(p.Script))
+		return link.RunWithScript(ctx, p.Script)
+	}
+	l.log.Info("dialled RF peer; linking", "peer", p.PeerCall)
 	return link.Run(ctx)
 }
 
