@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+# pdn-bpqchat postinst.
+#
+# This package ships CODE only — the single static Go binary + the app manifest — into the packetnet
+# SYSTEM app dir /usr/share/packetnet/apps/bpqchat (dpkg creates that dir as it unpacks the payload;
+# nothing to do here). All runtime STATE (bpqchat.db and its WAL/SHM sidecars, any chat.yaml) lives
+# in the packetnet OWNER app-state dir /var/lib/packetnet/apps/bpqchat and is NEVER shipped or
+# clobbered by this package (the code-vs-state split, mirroring pdn-convers/DAPPS).
+#
+# The packetnet node host package owns the `packetnet` system user and the /var/lib/packetnet root.
+# This package is a soft Recommends of packetnet, so the user may not exist yet at configure time. We
+# therefore only prepare the state dir when the user already exists, and never fail if it does not —
+# pdn itself creates the per-app state dir at runtime (packetnet-owned, 0750), so an absent dir here
+# is harmless.
+#
+# Idempotent, and deliberately does NOT start the packetnet service: the app is DEFAULT-OFF — the
+# node owner enables it from the control panel.
+
+case "$1" in
+  configure)
+    if getent passwd packetnet >/dev/null; then
+      install -d -o packetnet -g packetnet -m 0750 /var/lib/packetnet/apps/bpqchat
+    fi
+    ;;
+esac
+
+exit 0

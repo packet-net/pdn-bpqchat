@@ -1,5 +1,6 @@
 # Build output
 /dist/
+/artifacts/
 /pdn-bpqchat
 /cmd/pdn-bpqchat/pdn-bpqchat
 

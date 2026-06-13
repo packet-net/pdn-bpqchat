@@ -1,0 +1,15 @@
+Package: pdn-bpqchat
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Tom Fanning <tom@m0lte.uk>
+Recommends: packetnet
+Section: hamradio
+Priority: optional
+Homepage: https://github.com/m0lte/pdn-bpqchat
+Description: BPQ-Chat-compatible chat node app package for the Packet.NET node (pdn)
+ A BPQ-Chat-compatible chat node — multi-user chat for RF and web users that
+ peers with the BPQ Chat network. Ships as a Packet.NET app PACKAGE: pdn
+ discovers it under /usr/share/packetnet/apps/bpqchat and the node owner enables
+ it from the control panel (default off). A single static Go binary — no runtime
+ or shared-library dependencies. Inert without the packetnet node host (hence the
+ soft Recommends), but installable standalone.

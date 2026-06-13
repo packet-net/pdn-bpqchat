@@ -1,12 +1,12 @@
 name: release
 
-# Cross-compiles the pdn-bpqchat static binary for linux/amd64, arm64 and arm and attaches the
-# artifacts (and a self-contained .deb per arch — added in W7) to a GitHub Release. Triggered by a
-# `v*` tag or manual dispatch.
+# Cross-compiles the pdn-bpqchat static binary for amd64/arm64/armhf, packages each as a
+# self-contained .deb app package, and attaches the .debs (+ SHA256SUMS) to a GitHub Release.
+# Triggered by a `v*` tag or manual dispatch.
 #
-# Go's trivial cross-compile (GOARCH) is exactly why the project is Go (HANDOVER.md language
-# decision): one self-hosted x64 job builds all three arches, no arch-native runners, no
-# crossgen2-R2R OOM. Self-hosted x64 only — no GitHub-hosted runners.
+# Go's CGO-free cross-compile (GOARCH) builds all three arches on one self-hosted x64 job — no
+# arch-native runners, no cross C-toolchain, no bundled runtime (pure-Go SQLite is linked in). This
+# is exactly why the project is Go (HANDOVER.md language decision). Self-hosted x64 only.
 
 on:
   push:
@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  publish:
     runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
@@ -30,19 +30,34 @@ jobs:
       - uses: actions/checkout@v4
       - name: Go version
         run: go version
-      - name: Cross-compile (amd64, arm64, arm)
+
+      - id: v
+        name: Resolve version
         run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          [ -n "${VERSION:-}" ] || VERSION="${{ github.event.inputs.version }}"
-          mkdir -p dist
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build .debs (amd64 / arm64 / armhf)
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
           for arch in amd64 arm64 arm; do
-            out="dist/pdn-bpqchat-linux-${arch}"
-            echo "building $out"
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "$out" ./cmd/pdn-bpqchat
+            scripts/build-deb.sh "$arch" "$VERSION"
           done
-          ls -la dist
-      # W7: package each arch as a self-contained .deb (scripts/build-deb.sh) and attach to the
-      # Release, plus raise the packet.net side to bundle it default-off (mirror packet.net #403).
+
+      - name: Checksum + create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          ( cd artifacts && sha256sum pdn-bpqchat_*.deb > SHA256SUMS && ls -l pdn-bpqchat_*.deb SHA256SUMS )
+          gh release create "v${VERSION}" artifacts/pdn-bpqchat_*.deb artifacts/SHA256SUMS \
+            --repo "${{ github.repository }}" \
+            --title "pdn-bpqchat v${VERSION}" \
+            --notes "BPQ-Chat-compatible chat node app package for the Packet.NET node (pdn) ${VERSION} — static \`.deb\`s for amd64 / arm64 / armhf. Install on a box already running the packetnet node host: \`sudo apt install ./pdn-bpqchat_${VERSION}_<arch>.deb\` (single static Go binary, no runtime needed); the app lands under /usr/share/packetnet/apps/bpqchat and you enable it from the node control panel (default off). State (bpqchat.db) lives in /var/lib/packetnet/apps/bpqchat and is preserved across upgrades."
+
+      # Once a release is cut, raise the packet.net side to bundle this default-off in the node .deb
+      # (stage from the published release like DAPPS) — mirror packet.net #403 (HANDOVER.md §7, W7).

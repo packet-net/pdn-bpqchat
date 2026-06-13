@@ -73,6 +73,20 @@ It derives the chat callsign (`M0LTE-4` by default), binds and listens over
 RHP, and serves the web tile on `127.0.0.1:18093`. In W0 it greets and closes
 inbound connections — the chat service itself is not built yet.
 
+## Packaging (the pdn app `.deb`)
+
+pdn-bpqchat ships as a default-off Packet.NET app package. Build a `.deb`:
+
+```sh
+scripts/build-deb.sh amd64 0.0.1     # or: arm64 / arm (→ armhf)
+```
+
+It produces `artifacts/pdn-bpqchat_<version>_<arch>.deb` — a single static
+binary + the manifest, landing under `/usr/share/packetnet/apps/bpqchat`. Install
+on a node with `sudo apt install ./pdn-bpqchat_<version>_<arch>.deb` and enable it
+from the control panel. See [`docs/release-pipeline.md`](docs/release-pipeline.md)
+for the full pipeline and the code-vs-state split.
+
 ## References
 
 - [`HANDOVER.md`](HANDOVER.md) — the build plan and waves.
