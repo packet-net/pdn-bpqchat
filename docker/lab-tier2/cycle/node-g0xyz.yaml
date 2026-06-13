@@ -1,0 +1,20 @@
+schemaVersion: 1
+identity:
+  callsign: G0XYZ
+  alias: PDNNODB
+ports:
+  - id: bpqlink
+    enabled: true
+    transport:
+      kind: axudp
+      host: linbpq
+      port: 8093
+      localPort: 8093
+management:
+  telnet: { enabled: false }
+  http: { bind: 0.0.0.0, port: 8080 }
+rhp:
+  enabled: true
+  bind: 0.0.0.0
+  port: 9000
+  requireAuth: false

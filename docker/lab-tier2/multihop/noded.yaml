@@ -1,0 +1,19 @@
+schemaVersion: 1
+identity: { callsign: GB7DDD, alias: NODED }
+ports:
+  - id: toc
+    enabled: true
+    transport: { kind: axudp, host: nodec, port: 8005, localPort: 8006 }
+netRom:
+  enabled: true
+  broadcast: true
+  connect: true
+  sweepIntervalSeconds: 15
+management:
+  telnet: { enabled: true, bind: 0.0.0.0, port: 8011 }
+  http: { bind: 0.0.0.0, port: 8080 }
+rhp:
+  enabled: true
+  bind: 0.0.0.0
+  port: 9000
+  requireAuth: false

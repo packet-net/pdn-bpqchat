@@ -1,0 +1,39 @@
+# pdn node config for the tier-2 interop lab (docs/LAB.md).
+#
+# Role: the packet engine between pdn-bpqchat (RHPv2 client) and the LinBPQ chat
+# oracle (AX.25 over AXUDP). Schema + keys verified against m0lte/packet.net
+# (src/Packet.Node.Core/Configuration, docs/rhp2-server.md).
+schemaVersion: 1
+
+identity:
+  callsign: M0LTE          # pdn node call; pdn-bpqchat binds <call>-4 = M0LTE-4
+  alias: PDNNOD
+
+# The AXUDP link to LinBPQ is the FIRST (and only) port. An RHP `open` with no
+# port label dials a DIRECT AX.25 SABM out the first port
+# (SupervisorRhpGateway.OpenAx25StreamAsync), so rf:GB7PDN-2 reaches LinBPQ.
+ports:
+  - id: bpqlink
+    enabled: true
+    transport:
+      kind: axudp          # AX.25 frames over UDP (RFC-1226 AXIP/AXUDP, BPQAXIP)
+      host: linbpq         # the LinBPQ container (compose DNS name)
+      port: 8093           # LinBPQ's BPQAXIP UDP listener
+      localPort: 8093      # symmetric tunnel — receive on the same port
+
+management:
+  telnet:
+    enabled: true
+    bind: 0.0.0.0
+    port: 8011
+  http:
+    bind: 0.0.0.0
+    port: 8080
+
+# RHPv2 server — the plane pdn-bpqchat attaches to. Bound 0.0.0.0 so the
+# host-run app can reach it via the published port (lab only; RHP has no TLS).
+rhp:
+  enabled: true
+  bind: 0.0.0.0
+  port: 9000
+  requireAuth: false

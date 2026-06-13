@@ -1,0 +1,19 @@
+schemaVersion: 1
+identity: { callsign: GB7AAA, alias: NODEA }
+ports:
+  - id: tob
+    enabled: true
+    transport: { kind: axudp, host: nodeb, port: 8002, localPort: 8001 }
+netRom:
+  enabled: true
+  broadcast: true
+  connect: true
+  sweepIntervalSeconds: 15
+management:
+  telnet: { enabled: true, bind: 0.0.0.0, port: 8011 }
+  http: { bind: 0.0.0.0, port: 8080 }
+rhp:
+  enabled: true
+  bind: 0.0.0.0
+  port: 9000
+  requireAuth: false

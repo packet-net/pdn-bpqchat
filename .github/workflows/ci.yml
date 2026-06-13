@@ -1,0 +1,28 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+      # Go toolchain is pinned by go.mod; the self-hosted runner has Go installed.
+      # (No setup-go: it can fail writing its install dir as the runner user — mirror
+      # pdn-convers's "use the runner's SDK" note.)
+      - name: Go version
+        run: go version
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Gofmt (must be clean)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: Test (race)
+        run: go test -race ./...

@@ -1,0 +1,100 @@
+# pdn-bpqchat
+
+A **BPQ-Chat-compatible chat node** for the pdn (packet.net) platform — a
+first-class multi-user chat for RF users and the node owner (via a **web chat
+tile**) that **peers with the BPQ Chat network**. Shipped as a **default-off
+pdn app package**; a single static Go binary.
+
+> Status: **W0–W7 implemented.** A working RHPv2 client (W0), the BPQ protocol
+> derived in [`docs/design.md`](docs/design.md) from the vendored source (W1),
+> the pure chat domain + SQLite (W2), the RF user session + `/command` parser
+> (W3), the full SSE web chat (W4), node-to-node peering with loop/duplicate
+> suppression and a green cycle-no-storm gate (W5), RF peering + multi-peer +
+> resilience (W6), and the self-contained `.deb` app package (W7). Remaining: the
+> live net-sim/RF interop pass against a real BPQ node (needs docker / the lab),
+> and cutting a tagged release.
+
+## What it is
+
+Four pillars (all in scope — `HANDOVER.md` §4):
+
+1. **RF chat node** — local users connect over AX.25 through the pdn node (via
+   RHPv2) to the app's bound callsign, with a BPQ-Chat-compatible `/` command
+   interface.
+2. **Full web chat** — a complete browser UI at `/apps/bpqchat/` (live stream,
+   topics, presence, history, send), authenticated via the pdn app-gateway.
+3. **Peering** — node-to-node links to BPQ chat nodes and other pdn-bpqchat
+   nodes, with robust loop/duplicate suppression (the headline feature).
+4. **BPQ interop, oracle-first** — developed and tested against a containerised
+   LinBPQ chat node as ground truth.
+
+RF users and web users share the same topics.
+
+## Layout
+
+```
+cmd/pdn-bpqchat      the supervised daemon
+internal/rhp         the RHPv2 client (framing, codec, client) — W0 ✅, tested
+internal/config      supervisor-env → config; derives the on-air callsign
+internal/web         the loopback web tile (W0 placeholder; full chat in W4)
+internal/chat        the pure chat domain: hub, events, topics, presence, dedup — W2 ✅, tested
+internal/store/sqlite  durable message log + config KV (pure-Go SQLite) — W2 ✅, tested
+internal/session     RF user session: line assembler + BPQ /command parser — W3 ✅, tested
+internal/node        RHP↔hub adapter; demuxes inbound users vs peer links — W3/W6 ✅, tested
+internal/peer        BPQ node-to-node linking: codec, handshake, loop-control relay — W5/W6 ✅, tested
+docs/design.md       the BPQ wire spec, deficiency analysis, loop-control design (W1)
+reference/           vendored LinBPQ chat source (pinned; provenance recorded)
+docker/              the LinBPQ chat interop oracle (compose + bpq32.cfg)
+pdn-app.yaml         the pdn app-package manifest (default-off)
+.github/workflows/   CI + release (self-hosted runners only)
+```
+
+## Build & test
+
+```sh
+go build ./...
+go test ./...
+go vet ./...
+```
+
+Cross-compiling (what the release workflow does):
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o pdn-bpqchat ./cmd/pdn-bpqchat
+```
+
+## Running locally
+
+The daemon expects the pdn supervisor environment; for a local smoke test point
+it at a running RHPv2 server:
+
+```sh
+PDN_NODE_CALLSIGN=M0LTE PDN_RHP_HOST=127.0.0.1 PDN_RHP_PORT=9000 \
+PDN_APP_STATE=/tmp/bpqchat go run ./cmd/pdn-bpqchat
+```
+
+It derives the chat callsign (`M0LTE-4` by default), binds and listens over
+RHP, and serves the web tile on `127.0.0.1:18093`. In W0 it greets and closes
+inbound connections — the chat service itself is not built yet.
+
+## Packaging (the pdn app `.deb`)
+
+pdn-bpqchat ships as a default-off Packet.NET app package. Build a `.deb`:
+
+```sh
+scripts/build-deb.sh amd64 0.0.1     # or: arm64 / arm (→ armhf)
+```
+
+It produces `artifacts/pdn-bpqchat_<version>_<arch>.deb` — a single static
+binary + the manifest, landing under `/usr/share/packetnet/apps/bpqchat`. Install
+on a node with `sudo apt install ./pdn-bpqchat_<version>_<arch>.deb` and enable it
+from the control panel. See [`docs/release-pipeline.md`](docs/release-pipeline.md)
+for the full pipeline and the code-vs-state split.
+
+## References
+
+- [`HANDOVER.md`](HANDOVER.md) — the build plan and waves.
+- [`docs/design.md`](docs/design.md) — the derived BPQ wire spec + design.
+- `m0lte/pdn-bbs`, `m0lte/pdn-convers` — sibling pdn apps whose discipline this
+  mirrors.
+- packet.net `docs/rhp2-server.md` — the RHPv2 wire the client implements.
