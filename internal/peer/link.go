@@ -132,7 +132,7 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 func (l *Link) handshake(br *bufio.Reader) error {
 	if l.outbound {
 		// We dialled: wait for the banner, send *RTL + a keepalive, expect OK.
-		if err := l.readUntil(br, func(s string) bool { return strings.HasPrefix(s, bannerPrefix) }); err != nil {
+		if err := l.readUntil(br, isBanner); err != nil {
 			return err
 		}
 		if err := l.sendRaw(rtlLogin); err != nil {

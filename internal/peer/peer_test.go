@@ -25,6 +25,23 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBannerDetectionCaseInsensitive(t *testing.T) {
+	// Real LinBPQ sends mixed-case "[BPQChatServer-6.0.25.28]" (verified live
+	// against m0lte/linbpq); we must detect it as well as the uppercase form.
+	for _, s := range []string{
+		"[BPQChatServer-6.0.25.28]",
+		"[BPQCHATSERVER-pdn]",
+		"[bpqchatserver-x]",
+	} {
+		if !isBanner(s) {
+			t.Fatalf("isBanner(%q) = false, want true", s)
+		}
+	}
+	if isBanner("not a banner") {
+		t.Fatal("isBanner matched a non-banner line")
+	}
+}
+
 func TestDecodeRejectsNonControlAndCorrupt(t *testing.T) {
 	if _, ok := Decode("just user text"); ok {
 		t.Fatal("plain text decoded as control")

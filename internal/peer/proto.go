@@ -47,6 +47,15 @@ func banner() string { return bannerPrefix + "pdn]" }
 // whether the caller is a user or a linking peer.
 func Banner() string { return banner() }
 
+// isBanner reports whether a line is a chat-server banner. The match is
+// CASE-INSENSITIVE: real LinBPQ sends mixed-case "[BPQChatServer-6.0.25.28]"
+// (the ChatSID string, MailDataDefs.c) yet checks the uppercase form on receive
+// after _strupr (HanksRT.c:ProcessChatConnectScript) — verified live against
+// m0lte/linbpq. We must accept either case to link to a real BPQ node.
+func isBanner(line string) bool {
+	return len(line) >= len(bannerPrefix) && strings.EqualFold(line[:len(bannerPrefix)], bannerPrefix)
+}
+
 // IsRTL reports whether a line is the *RTL node-link login (design.md §3.2).
 func IsRTL(line string) bool { return strings.EqualFold(strings.TrimSpace(line), rtlLogin) }
 
