@@ -97,13 +97,14 @@ func (h *Hub) emit(events ...Event) {
 	if len(events) == 0 {
 		return
 	}
+	// Hold subMu across the sends: the sends are non-blocking (the default
+	// case), so the lock is held only briefly, and serialising with the cancel
+	// func (which closes a channel under the same lock) is what makes a
+	// concurrent send-and-close impossible — without this, emit could send on a
+	// channel cancel is closing (a race, and a send-on-closed panic).
 	h.subMu.Lock()
-	chans := make([]chan Event, 0, len(h.subs))
+	defer h.subMu.Unlock()
 	for _, ch := range h.subs {
-		chans = append(chans, ch)
-	}
-	h.subMu.Unlock()
-	for _, ch := range chans {
 		for _, e := range events {
 			select {
 			case ch <- e:
@@ -350,6 +351,17 @@ func (h *Hub) History(ctx context.Context, topic string, since time.Time, limit 
 }
 
 // --- queries (snapshots; never expose internal pointers) ---
+
+// User returns a snapshot of a present user, or false if absent.
+func (h *Hub) User(key UserKey) (User, bool) {
+	key = canonKey(key)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if u, ok := h.users[key]; ok {
+		return *u, true
+	}
+	return User{}, false
+}
 
 // Users returns every present user, sorted by callsign then node.
 func (h *Hub) Users() []User {
