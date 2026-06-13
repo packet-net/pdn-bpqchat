@@ -1,0 +1,63 @@
+# Tier-2 interop lab (docs/LAB.md §"Tier 2"): the full end-to-end path
+#
+#   pdn-bpqchat ──RHPv2──> pdn node ──AX.25 over AXUDP──> LinBPQ chat node
+#   (host binary)          (this stack)                   (this stack)
+#
+# Brings up the pdn node (m0lte/packet.net) and the LinBPQ chat oracle on a
+# fixed-subnet bridge so the AXUDP link has stable IPs. pdn-bpqchat itself runs
+# on the host against the node's published RHP port (:9000) — see LAB.md.
+#
+#   docker compose -f docker/lab-tier2/compose.tier2.yml up -d --wait
+name: pdnbpqchat-tier2
+
+services:
+  linbpq:
+    image: m0lte/linbpq:latest
+    container_name: pdnbpqchat-t2-linbpq
+    restart: unless-stopped
+    command: ["chat"]
+    volumes:
+      - ./linbpq/bpq32.cfg:/data/bpq32.cfg:ro
+      - ./linbpq/chatconfig.cfg:/data/chatconfig.cfg:ro
+    ports:
+      - "127.0.0.1:8010:8010"      # telnet node prompt
+      - "127.0.0.1:8008:8008"      # web UI
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8008 && exec 3<&-"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+      start_period: 20s
+    networks:
+      lab:
+        ipv4_address: 172.31.0.10
+
+  node:
+    image: m0lte/packet.net:latest
+    container_name: pdnbpqchat-t2-node
+    restart: unless-stopped
+    depends_on:
+      linbpq:
+        condition: service_healthy
+    volumes:
+      - ./packetnet.yaml:/etc/packetnet/packetnet.yaml:ro
+    ports:
+      - "127.0.0.1:9000:9000"      # RHPv2 — pdn-bpqchat attaches here
+      - "127.0.0.1:8081:8080"      # node control panel
+      - "127.0.0.1:8011:8011"      # node telnet console
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3<&-"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+      start_period: 15s
+    networks:
+      lab:
+        ipv4_address: 172.31.0.20
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
