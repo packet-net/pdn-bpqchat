@@ -1,0 +1,31 @@
+# pdn-app.yaml — the pdn-bpqchat app package manifest (packet.net docs/app-packages.md).
+#
+# Authored by this repo and shipped alongside the published static binary; pdn discovers it under
+# /usr/share/packetnet/apps/bpqchat (or /var/lib/packetnet/apps/bpqchat for an owner-installed copy)
+# and never special-cases the app id. The node is reached through public interfaces only: RHPv2 for
+# the packet plane, the app-gateway identity contract for the web tile.
+#
+# DEFAULT-OFF: this is a discovered-but-disabled app (HANDOVER.md §1) — the owner enables it.
+#
+# CALLSIGN: derived automatically from the node — <PDN_NODE_CALLSIGN>-<ssid> (default SSID 4); do NOT
+# set a callsign here. PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT / PDN_APP_STATE come from the
+# supervisor environment. The web port below MUST match the daemon's web bind (config DefaultWebPort).
+manifest: 1
+id: bpqchat                   # must equal the package directory name
+name: BPQ Chat
+version: "0.0.1"
+description: BPQ-Chat-compatible chat node — RF + web chat, peering with the BPQ Chat network. Default off.
+icon: chat
+capabilities: [network, web]  # binds its own callsign over RHPv2; serves its own web UI
+
+# The Go daemon pdn supervises while the app is enabled. Users connect to its bound callsign over RF,
+# and the node owner uses the web tile; there is no console `session:` verb.
+service:
+  command: ./pdn-bpqchat      # relative — resolves to the published static binary in this package dir
+  environment: {}             # PDN_APP_STATE / PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT from the supervisor
+
+# pdn reverse-proxies /apps/bpqchat/ to the loopback upstream and shows a launcher tile.
+ui:
+  upstream: http://127.0.0.1:18093   # MUST match the daemon's web port (config.DefaultWebPort)
+  name: BPQ Chat
+  icon: chat

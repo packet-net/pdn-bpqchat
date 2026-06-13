@@ -1,0 +1,48 @@
+name: release
+
+# Cross-compiles the pdn-bpqchat static binary for linux/amd64, arm64 and arm and attaches the
+# artifacts (and a self-contained .deb per arch — added in W7) to a GitHub Release. Triggered by a
+# `v*` tag or manual dispatch.
+#
+# Go's trivial cross-compile (GOARCH) is exactly why the project is Go (HANDOVER.md language
+# decision): one self-hosted x64 job builds all three arches, no arch-native runners, no
+# crossgen2-R2R OOM. Self-hosted x64 only — no GitHub-hosted runners.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the v prefix, e.g. 0.0.1'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go version
+        run: go version
+      - name: Cross-compile (amd64, arm64, arm)
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ -n "${VERSION:-}" ] || VERSION="${{ github.event.inputs.version }}"
+          mkdir -p dist
+          for arch in amd64 arm64 arm; do
+            out="dist/pdn-bpqchat-linux-${arch}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "$out" ./cmd/pdn-bpqchat
+          done
+          ls -la dist
+      # W7: package each arch as a self-contained .deb (scripts/build-deb.sh) and attach to the
+      # Release, plus raise the packet.net side to bundle it default-off (mirror packet.net #403).

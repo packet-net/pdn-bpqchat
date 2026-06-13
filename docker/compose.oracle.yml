@@ -1,0 +1,33 @@
+# The BPQ-chat interop oracle (HANDOVER.md §6) — a real LinBPQ chat node that pdn-bpqchat develops
+# and tests against as ground truth. Reuses the m0lte/linbpq image already used by packet.net's
+# interop stack; you do NOT build BPQ.
+#
+# W0/W1: this compose exists and the image is pullable — the oracle is "reachable". Later waves wire
+# the acceptance tests (HANDOVER.md §6 a–d): pdn-bpqchat links to this node, a message crosses in
+# both directions, RF + web + BPQ users share a room, presence/topics propagate, and a 3-node cycle
+# does not loop-storm.
+#
+# The chat node-link rides the packet network (design.md §5), so a later wave adds a net-sim AFSK
+# channel for the RF-link path; the quick dev loop links over whatever IP node-link transport the
+# bpq32.cfg exposes (telnet/AXUDP), derived from the BPQ source.
+
+services:
+  linbpq-chat:
+    image: m0lte/linbpq:latest
+    container_name: pdnbpqchat-oracle
+    restart: unless-stopped
+    volumes:
+      # The chat-node configuration (read-only bind), mirroring packet.net's docker/linbpq pattern.
+      - ./linbpq/bpq32.cfg:/opt/linbpq/bpq32.cfg:ro
+    ports:
+      # Telnet node access (drive a "user" in for end-to-end tests) and the chat application port.
+      # Exact ports are pinned when bpq32.cfg's CHAT APPLICATION + node-link config are finalised
+      # against the BPQ source (W5). Kept on the loopback host interface for an isolated lab.
+      - "127.0.0.1:8010:8010"   # telnet node login
+    healthcheck:
+      # Replaced with a real chat-node readiness probe in W5 (e.g. a telnet banner check); the
+      # placeholder lets `--wait` gate the lab bring-up today.
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

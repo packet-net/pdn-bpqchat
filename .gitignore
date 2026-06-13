@@ -1,0 +1,19 @@
+# Build output
+/dist/
+/pdn-bpqchat
+/cmd/pdn-bpqchat/pdn-bpqchat
+
+# Go test/coverage artifacts
+*.out
+*.test
+coverage.txt
+
+# Local state / SQLite (the app writes these under PDN_APP_STATE at runtime)
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
