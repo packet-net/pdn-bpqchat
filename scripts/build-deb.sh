@@ -49,7 +49,11 @@ echo "==> stage .deb tree for $arch"
 rm -rf "$stage"
 install -d "$stage/usr/share/packetnet/apps/bpqchat" "$stage/DEBIAN"
 install -m 0755 "$bin" "$stage/usr/share/packetnet/apps/bpqchat/pdn-bpqchat"
-install -m 0644 "$root/pdn-app.yaml" "$stage/usr/share/packetnet/apps/bpqchat/pdn-app.yaml"
+# Stamp the release version into the manifest so the shipped pdn-app.yaml matches
+# the binary/control/release (the repo copy carries a dev default).
+sed "s/^version: .*/version: \"$version\"/" "$root/pdn-app.yaml" \
+  > "$stage/usr/share/packetnet/apps/bpqchat/pdn-app.yaml"
+chmod 0644 "$stage/usr/share/packetnet/apps/bpqchat/pdn-app.yaml"
 
 # Installed-Size (KiB) — apt shows it; dpkg-deb does not compute it for us.
 size_kib="$(du -k -s "$stage/usr" | cut -f1)"

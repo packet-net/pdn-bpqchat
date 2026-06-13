@@ -22,7 +22,14 @@ capabilities: [network, web]  # binds its own callsign over RHPv2; serves its ow
 # and the node owner uses the web tile; there is no console `session:` verb.
 service:
   command: ./pdn-bpqchat      # relative — resolves to the published static binary in this package dir
-  environment: {}             # PDN_APP_STATE / PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT from the supervisor
+  environment: {}             # PDN_APP_STATE / PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT from the supervisor.
+                              # Optional owner knobs (set via the node's apps: entry environment override):
+                              #   PDN_BPQCHAT_PEERS        outbound peers, comma-separated: "CALL@host:port" (IP),
+                              #                            "rf:CALL" (direct AX.25), "via:…" (node-prompt connect
+                              #                            script across the network). See docs/LAB.md.
+                              #   PDN_BPQCHAT_PEER_LISTEN  host:port to accept inbound pdn↔pdn IP peer links.
+                              #   PDN_BPQCHAT_SSID         override the default chat SSID (4).
+                              #   PDN_LOG_LEVEL            debug | info | warn | error (default info).
 
 # pdn reverse-proxies /apps/bpqchat/ to the loopback upstream and shows a launcher tile.
 ui:
