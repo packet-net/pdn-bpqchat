@@ -223,7 +223,9 @@ provenance + rate limits).
   id-based**, and **does not cover** `id_send`/`id_topic`/`id_join`/`id_leave`.
 - Plus **magic-number storm guards** (ignore a leave if connected < 3 s; don't
   re-report a join within 5 s) — an admission that the graph state is fragile.
-**pdn — robust design in §5.**
+**pdn — robust design in §5** (structural spanning-tree relay as the primary
+mechanism + a content-hash dedup backstop, since the BPQ-format-only decision
+(§9) leaves no wire id/hop field to use).
 
 ### 4.4 C string / buffer handling — hostile input assumed well-formed
 **Confirmed.** Fixed buffers (`DupText[100]`, `callsign[10]`, `Msg[80/100/256]`),
@@ -262,39 +264,52 @@ nothing survives a restart; terminal-only.
 ## 5. pdn-bpqchat's loop / duplicate suppression design
 
 The acceptance gate is **"a cycle of nodes does not storm"** (HANDOVER.md §6d).
-BPQ's heuristic (§4.3) is not good enough. Design:
+BPQ's heuristic (§4.3) is not good enough — but **we keep the wire byte-identical
+to vanilla BPQ** (decision 2026-06-13, §9): **no extended framing, even between
+two pdn nodes.** So there is **no wire-carried message id and no hop counter** to
+lean on (BPQ's record format has neither, §3.3). That makes the **structural
+mechanism load-bearing**, with a **content-hash dedup as the backstop**:
 
-**Within the pdn-bpqchat mesh (extended framing between pdn nodes):**
-1. **Globally-unique message id.** Every record that *originates* at a node
-   carries `MsgID = (origin-node-callsign, monotonic-uint64)`, set once and
-   **never rewritten** as it propagates. Covers **all** record types, not just
-   data.
-2. **Seen-set with TTL.** Each node keeps a `seen` set of `MsgID`s with a TTL
-   (≥ the longest plausible mesh propagation delay, e.g. 10 min). A record whose
-   `MsgID` is already in `seen` is **dropped before any delivery or relay** —
-   definitive de-dup, replacing `CheckforDups`'s lossy window.
-3. **Hop limit (belt and braces).** A small TTL/hop counter, decremented per
-   relay, dropped at zero — bounds circulation even if the node graph is
-   temporarily inconsistent (the failure mode §4.3's magic numbers paper over).
-4. **Spanning-tree relay (efficiency).** Keep BPQ's `echo` rule — never relay
-   back to the ingress link, nor to a link that already knows the origin node —
-   as the primary fan-out reducer on top of (2)+(3).
+1. **Origin checks (keep BPQ's).** Drop a record from an unknown node, or one
+   whose `ncall` is us (`matchi(ncall, OurNode)`) — the basic loop break.
+2. **Spanning-tree relay — the primary mechanism.** Keep and *harden* BPQ's
+   `echo` rule: relay to every linked circuit **except** the ingress circuit and
+   any circuit that already knows the origin node (`cn_find`). This is purely
+   **topology-based** — it needs no wire id — so it survives the BPQ-format-only
+   constraint. Its correctness depends entirely on the **per-link known-node
+   graph** being consistent, so that graph (built from `id_link`/`id_unlink` +
+   `state_tell`) becomes a **first-class, unit-tested state machine**, not the
+   fragile thing §4.3's 3 s/5 s magic numbers paper over. Re-link loop refusal
+   (`rtloginl`: refuse a link from an already-known node) stays.
+3. **Content-hash seen-set — the backstop.** A `seen` set keyed by a
+   **deterministic synthetic id** computed identically on every node, purely from
+   record content that is **stable across the mesh**:
+   `synthID = hash(origin-ncall, ucall, type, normalise(text))`. A record whose
+   `synthID` is already in `seen` is **dropped before delivery or relay**. This
+   **strictly improves on `CheckforDups`**: it covers **all** record types (not
+   just `id_data`), uses a full hash (not a 99-byte prefix), and a sized set with
+   a TTL ≥ the longest plausible propagation delay (e.g. 10 min) rather than 10
+   entries / 5 s. Because the id is content-derived, a record we *originated*
+   that loops back to us via a cycle hashes to the same id and is dropped — the
+   same property a wire id would give, without touching the wire.
 
-**At the vanilla-BPQ wire edge (interop constraint — the ceiling):**
-- We **must emit exactly BPQ's record format** (§3.3) with **no extra fields** —
-  an unknown trailing field would not corrupt BPQ's space-split parser, but we
-  keep strict fidelity and carry pdn ids only on **pdn↔pdn** links (negotiated
-  via the banner capability flags).
-- For records arriving **from a BPQ node** (no `MsgID`), synthesise a
-  **deterministic local id** from `(origin ncall, ucall, type, hash(text),
-  coarse-time-bucket)` purely for *our* seen-set, so a BPQ-originated message
-  that reaches us by two paths is still de-duped. This is heuristic at the BPQ
-  boundary (unavoidable — BPQ carries no id) but **robust inside the pdn mesh**.
+**The residual limitation (stated honestly).** Without a wire id, two
+*genuinely distinct* messages with identical `(origin, user, type, text)` inside
+the TTL window collide and the second is suppressed — exactly BPQ's class of
+false-positive, but far rarer here (full text hash, not a prefix; and identical
+text from the same user in minutes is almost always a real duplicate anyway). A
+true unique id is impossible on the BPQ wire by construction, so we make the
+**structural** mechanism (2) carry correctness and treat (3) as the safety net
+for the transient window while the node graph re-converges after a topology
+change. If experience shows this is insufficient, the escape hatch is a future
+capability-negotiated pdn↔pdn extension — explicitly deferred, not designed in.
 
-**Acceptance test (W5):** build `pdn ↔ BPQ ↔ pdn` and `pdn ↔ pdn ↔ pdn` cycles,
+**Acceptance test (W5).** Build `pdn ↔ BPQ ↔ pdn` and `pdn ↔ pdn ↔ pdn` cycles,
 inject a message at one node, and assert (a) every node delivers it to its local
 users **exactly once**, and (b) after the TTL no record is still circulating
-(cf. packet.net INP3 "drain-once-per-round" / link-bench storm work).
+(cf. packet.net INP3 "drain-once-per-round" / link-bench storm work). The test
+must also **flap a link mid-cycle** to exercise the node-graph state machine (2),
+since that — not a wire id — is what prevents the storm.
 
 ## 6. Identity, presence, topics across the mesh
 
@@ -303,8 +318,9 @@ users **exactly once**, and (b) after the TTL no record is still circulating
   `id_join`/`id_leave`; name/QTH as `id_user`.
 - Topic state reconciles on link-up via `state_tell` (§3.4) — pdn does this as a
   **bounded delta reconcile**, not a blind re-dump (§4.5).
-- **Default topic:** open question (§9) — BPQ drops users into a node "general"
-  topic; pdn picks a name/number to land on at connect.
+- **Default topic:** **`General`** (decision 2026-06-13, §9) — every user (RF and
+  web) lands in the topic named `General` on connect; topic names are
+  case-insensitive (§3.5).
 
 ## 7. Persistence (SQLite, from W2)
 
@@ -342,15 +358,33 @@ Confirmed here:
 - **The bound callsign serves both users and node links;** `*RTL` as the first
   line promotes a session to a link.
 
-**Open** (flag early; don't block W2):
-- **Default topic** users land in on connect (pick a name/number).
-- **Which real peer(s)** to link to and the **default peer transport** — likely
-  blocked on an external prerequisite (a parent chat node); develop against the
-  docker BPQ oracle meanwhile, leave the live peer unset.
-- **Multi-peer in v1 vs one-link-first** — lean multi-peer (peering is the
-  point) but stage W5 (one TCP-reachable peer / the oracle) → W6 (RF + multi).
-- **pdn↔pdn extended id framing** — exact capability-flag negotiation in the
-  `[BPQCHATSERVER-…]` banner; design in W5, must stay invisible to vanilla BPQ.
+**Resolved 2026-06-13 (Tom):**
+- **Default topic = `General`.** Every user lands in the topic named `General`
+  on connect (§6); topic names are case-insensitive.
+- **Default peer transport = telnet node-link.** The dev loop links to the
+  docker BPQ oracle over a telnet/IP node connection (the fastest loop, no RF
+  sim); RF-via-RHP + net-sim is the realism pass in W6. The **live peer stays
+  unset** until a parent chat node is arranged — develop against the oracle
+  meanwhile (still blocked on that external prerequisite).
+- **Multi-peer, staged.** v1 targets multiple simultaneous peers (peering is the
+  point), staged: **W5** proves one peer + the loop-control backstop against the
+  oracle; **W6** adds multi-peer + the RF link path. Robust loop suppression
+  (§5) is built in from W5, not retrofitted.
+- **BPQ-format only — no pdn↔pdn extended framing.** The inter-node wire stays
+  byte-identical to vanilla BPQ on *every* link, including pdn↔pdn. Loop control
+  therefore uses the structural spanning-tree relay (primary) + a content-hash
+  dedup backstop, with **no wire message-id or hop field** (§5). A
+  capability-negotiated extension remains a possible future escape hatch if the
+  content-hash backstop proves insufficient in practice — explicitly **not**
+  designed in now.
+
+**Still open** (flag early; don't block W2):
+- **Which real peer(s)** to link to for the live network — blocked on Tom
+  arranging a parent/peer chat node (as above).
+- **The exact `General`-topic semantics on the BPQ wire** — confirm in W5 that
+  landing every user in `General` interoperates cleanly with a BPQ node's own
+  default topic (do they reconcile to one shared room, or stay distinct?).
+  Derive from the oracle.
 
 ## 10. What W0 delivered (this branch)
 
