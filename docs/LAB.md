@@ -173,21 +173,32 @@ PDN_BPQCHAT_PEERS=via:G0BBB-4
 PDN_BPQCHAT_PEERS="via:GB7DDD-4|GB7BBB|GB7BBB>=C GB7CCC|GB7CCC>=C GB7DDD|GB7DDD>=C GB7DDD-4"
 ```
 
-The multi-hop lab (`docker/lab-tier2/multihop/`, PDN 0.9.1) is a chain
+The multi-hop lab (`docker/lab-tier2/multihop/`, PDN 0.9.2) is a chain
 `NODEA—NODEB—NODEC—NODED` over AXUDP where **B and C run no chat app** — pure
 routing nodes the script walks through. Use `PDN_LOG_LEVEL=debug` to see the
 `connect-script: matched … sent …` trace.
 
 > **Status (2026-06-13):** the expect engine is unit-proven
 > (`TestConnectScriptDial`), and the node prompts/`C`-walk were verified by hand
-> on 0.9.1 (`C GB7CCC` → `Connected to GB7CCC.\r\n…GB7CCC> `). The end-to-end app
-> walk is **blocked on a pdn-node behaviour**: an app's RHP `open` to a remote
-> node arrives as node/interlink traffic (an interlink carries PID-0xCF NET/ROM
-> datagrams, **not** console text, so no prompt is sent) instead of a
-> console-bridged user circuit whose originator is the app callsign. The far
-> node's prompt therefore never returns to the app and the first `expect` times
-> out. It will pass once an app `open` to a node lands on that node's console
-> under the app callsign.
+> (`C GB7CCC` → `Connected to GB7CCC.\r\n…GB7CCC> `).
+>
+> **0.9.2** added the console over RHP — an `open` to a node's own callsign now
+> returns its `…> ` prompt as a `recv`. Verified: a **non-node** source callsign
+> reaches it. But a connect whose **base callsign is itself a NET/ROM node** is
+> still classified as an interlink and gets no prompt — and the chat app's
+> callsign is `<node>-4` (base = the node), so it still hits this:
+>
+> | `open.local` | base is a NET/ROM node? | prompt? |
+> |---|---|---|
+> | `GB7AAA-4` | yes (`GB7AAA`) | none |
+> | `G9XXX-1`  | no | ✅ |
+> | `M0ZZZ`    | no | ✅ |
+>
+> So the end-to-end app walk is **still blocked** pending a node-side change: an
+> app `open` (a normal PID-0xF0 connect) to a node should land on that node's
+> console even when the originator's base call is a node — only true PID-0xCF
+> NET/ROM interlinks should bypass the console. The lab is pinned to 0.9.2 and
+> will pass once that lands.
 
 This is the mechanism for scaling chat peering over an AXUDP/NET-ROM backbone
 (`design.md` §W6).
