@@ -1,0 +1,51 @@
+# Tier-2 MULTI-HOP lab (docs/LAB.md): a connect script walked across a chain of
+# pdn nodes, two of which run NO chat app (pure routing nodes) — proving an
+# expect/send connect script over a real multi-hop path.
+#
+#   NODEA ──axudp── NODEB ──axudp── NODEC ──axudp── NODED
+#   GB7AAA          GB7BBB          GB7CCC          GB7DDD
+#   chat GB7AAA-4   (no chat)       (no chat)       chat GB7DDD-4
+#
+# pdnA's chat app reaches pdnD's chat app by:
+#   open GB7BBB  →  C GB7CCC  →  C GB7DDD  →  C GB7DDD-4   (the 0.9.x node-prompt
+# expect "GB7BBB>"   "GB7CCC>"    "GB7DDD>"   →  chat app    →local-app connect)
+#
+# The two pdn-bpqchat apps run on the host (see docs/LAB.md). Needs PDN >=0.9.1.
+#   docker compose -f docker/lab-tier2/multihop/compose.multihop.yml up -d --wait
+name: pdnbpqchat-multihop
+
+x-node: &node
+  image: m0lte/packet.net:0.9.1
+  restart: unless-stopped
+
+services:
+  nodea:
+    <<: *node
+    container_name: pdnbpqchat-mh-nodea
+    volumes: [ "./nodea.yaml:/etc/packetnet/packetnet.yaml:ro" ]
+    ports: [ "127.0.0.1:9000:9000", "127.0.0.1:8021:8011" ]
+    networks: { lab: { ipv4_address: 172.31.2.10 } }
+  nodeb:
+    <<: *node
+    container_name: pdnbpqchat-mh-nodeb
+    volumes: [ "./nodeb.yaml:/etc/packetnet/packetnet.yaml:ro" ]
+    ports: [ "127.0.0.1:8022:8011" ]
+    networks: { lab: { ipv4_address: 172.31.2.11 } }
+  nodec:
+    <<: *node
+    container_name: pdnbpqchat-mh-nodec
+    volumes: [ "./nodec.yaml:/etc/packetnet/packetnet.yaml:ro" ]
+    ports: [ "127.0.0.1:8023:8011" ]
+    networks: { lab: { ipv4_address: 172.31.2.12 } }
+  noded:
+    <<: *node
+    container_name: pdnbpqchat-mh-noded
+    volumes: [ "./noded.yaml:/etc/packetnet/packetnet.yaml:ro" ]
+    ports: [ "127.0.0.1:9003:9000", "127.0.0.1:8024:8011" ]
+    networks: { lab: { ipv4_address: 172.31.2.13 } }
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config: [ { subnet: 172.31.2.0/24 } ]

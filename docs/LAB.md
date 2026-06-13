@@ -158,24 +158,39 @@ Exactly one delivery per node, bounded traffic — the wire confirmation of the
 
 Teardown: `docker compose -f docker/lab-tier2/cycle/compose.cycle.yml down -v`.
 
-### Reaching a peer across the network — connect scripts
+### Reaching a peer across the network — connect scripts (expect/send)
 
-The cycle above keeps every peer one hop away because a direct `rf:CALL` opens an
-AX.25 SABM out the node's first port only. To peer with a chat node that is
-several hops across a packet network, use a **connect script**
-(`PDN_BPQCHAT_PEERS=via:…`) — open to a node we can reach and walk node-prompt
-`C` commands to it, the last connecting to the peer's chat app:
+A direct `rf:CALL` opens an AX.25 SABM out the node's first port only, so it
+reaches a peer one hop away. To peer with a chat node several hops across a packet
+network, use an **expect/send connect script** (`PDN_BPQCHAT_PEERS=via:…`): open
+to a node we can reach and walk node-prompt `C` commands to the peer's chat app,
+**waiting for each node prompt before sending the next connect** (not pacing):
 
 ```sh
-# two-node shortcut: open to G0BBB's node prompt, then "C G0BBB-4"
+# two-node shortcut: open G0BBB's node prompt, expect "G0BBB>", send "C G0BBB-4"
 PDN_BPQCHAT_PEERS=via:G0BBB-4
-# explicit multi-hop: peer GB7RDG-1, open GB7STH, then walk on
-PDN_BPQCHAT_PEERS="via:GB7RDG-1|GB7STH|C RDGCHT"
+# explicit multi-hop, expect/send per step (EXPECT=SEND):
+PDN_BPQCHAT_PEERS="via:GB7DDD-4|GB7BBB|GB7BBB>=C GB7CCC|GB7CCC>=C GB7DDD|GB7DDD>=C GB7DDD-4"
 ```
 
-The node-prompt→local-app connect (the final `C G0BBB-4`) needs **PDN ≥0.9.0**.
+The multi-hop lab (`docker/lab-tier2/multihop/`, PDN 0.9.1) is a chain
+`NODEA—NODEB—NODEC—NODED` over AXUDP where **B and C run no chat app** — pure
+routing nodes the script walks through. Use `PDN_LOG_LEVEL=debug` to see the
+`connect-script: matched … sent …` trace.
+
+> **Status (2026-06-13):** the expect engine is unit-proven
+> (`TestConnectScriptDial`), and the node prompts/`C`-walk were verified by hand
+> on 0.9.1 (`C GB7CCC` → `Connected to GB7CCC.\r\n…GB7CCC> `). The end-to-end app
+> walk is **blocked on a pdn-node behaviour**: an app's RHP `open` to a remote
+> node arrives as node/interlink traffic (an interlink carries PID-0xCF NET/ROM
+> datagrams, **not** console text, so no prompt is sent) instead of a
+> console-bridged user circuit whose originator is the app callsign. The far
+> node's prompt therefore never returns to the app and the first `expect` times
+> out. It will pass once an app `open` to a node lands on that node's console
+> under the app callsign.
+
 This is the mechanism for scaling chat peering over an AXUDP/NET-ROM backbone
-(`design.md` §W6); the unit test `TestConnectScriptDial` proves the walk.
+(`design.md` §W6).
 
 ### The .deb alternative
 

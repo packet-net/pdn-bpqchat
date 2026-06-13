@@ -33,7 +33,7 @@ func TestParsePeers(t *testing.T) {
 }
 
 func TestParsePeersConnectScript(t *testing.T) {
-	// Shortcut form: via:CALL → open to the base node call, then "C CALL".
+	// Shortcut form: via:CALL → open to the base node call, expect its prompt, "C CALL".
 	_, rf, err := parsePeers("via:g0bbb-4")
 	if err != nil {
 		t.Fatal(err)
@@ -44,12 +44,12 @@ func TestParsePeersConnectScript(t *testing.T) {
 	if rf[0].PeerCall != "G0BBB-4" || rf[0].OpenTo != "G0BBB" {
 		t.Fatalf("shortcut plan = %+v", rf[0])
 	}
-	if len(rf[0].Script) != 1 || rf[0].Script[0] != "C G0BBB-4" {
-		t.Fatalf("shortcut script = %v, want [\"C G0BBB-4\"]", rf[0].Script)
+	if len(rf[0].Script) != 1 || rf[0].Script[0].Expect != "G0BBB>" || rf[0].Script[0].Send != "C G0BBB-4" {
+		t.Fatalf("shortcut script = %+v", rf[0].Script)
 	}
 
-	// Multi-hop form: via:PEER|OPEN|CMD|CMD.
-	_, rf, err = parsePeers("via:GB7RDG-1|GB7STH|C 1 MB7NCR-2|C RDGCHT")
+	// Multi-hop expect/send form: via:PEER|OPEN|EXPECT=SEND|EXPECT=SEND.
+	_, rf, err = parsePeers("via:GB7RDG-1|GB7STH|GB7STH>=C GB7RDG|GB7RDG>=C RDGCHT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,13 +57,15 @@ func TestParsePeersConnectScript(t *testing.T) {
 	if p.PeerCall != "GB7RDG-1" || p.OpenTo != "GB7STH" {
 		t.Fatalf("multihop plan = %+v", p)
 	}
-	if len(p.Script) != 2 || p.Script[0] != "C 1 MB7NCR-2" || p.Script[1] != "C RDGCHT" {
-		t.Fatalf("multihop script = %v", p.Script)
+	if len(p.Script) != 2 ||
+		p.Script[0].Expect != "GB7STH>" || p.Script[0].Send != "C GB7RDG" ||
+		p.Script[1].Expect != "GB7RDG>" || p.Script[1].Send != "C RDGCHT" {
+		t.Fatalf("multihop script = %+v", p.Script)
 	}
 
-	// Bad: via: with an open target but no command.
+	// Bad: via: with an open target but no step.
 	if _, _, err := parsePeers("via:GB7RDG-1|GB7STH"); err == nil {
-		t.Fatal("via: with no connect command should error")
+		t.Fatal("via: with no connect step should error")
 	}
 }
 

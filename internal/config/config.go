@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/m0lte/pdn-bpqchat/internal/peer"
 )
 
 // Default values for fields not pinned by the environment or chat.yaml.
@@ -52,15 +54,15 @@ type Config struct {
 // RFPeer is an outbound peer chat node reached over AX.25 via RHP. For a directly
 // reachable peer, OpenTo == PeerCall and Script is empty (a plain RHP open). For a
 // peer across the network, OpenTo is the first hop (a node we can open to) and
-// Script is the node-prompt connect commands typed to walk to the peer's chat
-// app — e.g. open to G0BBB's node prompt, then "C G0BBB-4" (the SSID its chat app
-// is registered to). PeerCall is always the peer's chat callsign — the link
-// identity used in the BPQ node-link handshake.
+// Script is an expect/send connect script walked over its node prompt to reach the
+// peer's chat app — e.g. open to G0BBB's node prompt, expect "G0BBB>", then send
+// "C G0BBB-4" (the SSID its chat app is registered to). PeerCall is always the
+// peer's chat callsign — the link identity used in the BPQ node-link handshake.
 type RFPeer struct {
-	PeerCall string   // peer chat callsign (link identity)
-	OpenTo   string   // RHP open target (first hop); == PeerCall for a direct dial
-	OpenPort string   // RHP open port label ("" = the node's first port)
-	Script   []string // node-prompt connect commands sent after the open (multi-hop)
+	PeerCall string            // peer chat callsign (link identity)
+	OpenTo   string            // RHP open target (first hop); == PeerCall for a direct dial
+	OpenPort string            // RHP open port label ("" = the node's first port)
+	Script   []peer.ScriptStep // expect/send connect script walked after the open (multi-hop)
 }
 
 // Peer is a configured outbound peer chat node reachable over a TCP node-link
@@ -119,15 +121,17 @@ func Load() (*Config, error) {
 //   - "CALLSIGN@host:port" — an IP/telnet peer (the pdn↔pdn dev transport).
 //   - "rf:CALLSIGN"        — an RF peer dialled DIRECTLY over AX.25 via RHP.
 //   - "via:CALLSIGN"       — an RF peer reached by a node-prompt connect script:
-//     open to the peer's node (its base callsign), then "C CALLSIGN" to connect
-//     through to its chat app (the SSID it is registered to). This is the simple
-//     two-node case (PDN ≥0.9.0 connects the node prompt to a local app).
-//   - "via:PEERCALL|OPENTARGET|CMD|CMD…" — the multi-hop form: PEERCALL is the
-//     peer chat callsign (link identity), OPENTARGET is the first node we open to,
-//     and each CMD is a node-prompt line typed to walk onward, the last landing on
-//     the chat app (mirrors BPQ's OtherChatNodes connect scripts).
+//     open to the peer's node (its base callsign), expect its "<call>>" prompt,
+//     then "C CALLSIGN" to connect through to its chat app (the SSID it is
+//     registered to). The two-node case (PDN ≥0.9.0 connects the node prompt to a
+//     local app).
+//   - "via:PEERCALL|OPENTARGET|EXPECT=SEND|EXPECT=SEND…" — the multi-hop form:
+//     PEERCALL is the peer chat callsign (link identity), OPENTARGET is the first
+//     node we open to, and each step waits for EXPECT (a node prompt) then sends
+//     SEND (a "C …" connect), walking node by node, the last landing on the chat
+//     app. Expect/send — not pacing — so each hop is confirmed before the next.
 //
-// E.g. "GB7CHT@127.0.0.1:8010,rf:GB7RDG-1,via:G0BBB-4,via:GB7RDG-1|GB7STH|C RDGCHT".
+// E.g. "rf:GB7RDG-1,via:G0BBB-4,via:GB7RDG-1|GB7STH|GB7STH>=C GB7RDG|GB7RDG>=C GB7RDG-1".
 func parsePeers(s string) ([]Peer, []RFPeer, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -181,25 +185,38 @@ func parseVia(spec, entry string) (RFPeer, error) {
 	}
 	switch {
 	case len(fields) == 1:
-		// Shortcut: open to the peer's node (base call), then connect to its app.
-		return RFPeer{PeerCall: peerCall, OpenTo: baseCall(peerCall), Script: []string{"C " + peerCall}}, nil
+		// Shortcut: open to the peer's node (base call), expect its node prompt,
+		// then connect to its app (the PDN "<nodecall>>" prompt convention).
+		base := baseCall(peerCall)
+		return RFPeer{
+			PeerCall: peerCall,
+			OpenTo:   base,
+			Script:   []peer.ScriptStep{{Expect: base + ">", Send: "C " + peerCall}},
+		}, nil
 	case len(fields) >= 3:
 		openTo := strings.ToUpper(fields[1])
 		if openTo == "" {
 			return RFPeer{}, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q: via: needs an open target", entry)
 		}
-		var script []string
-		for _, cmd := range fields[2:] {
-			if cmd != "" {
-				script = append(script, cmd)
+		var script []peer.ScriptStep
+		for _, f := range fields[2:] {
+			if f == "" {
+				continue
+			}
+			exp, snd, ok := strings.Cut(f, "=")
+			if ok {
+				script = append(script, peer.ScriptStep{Expect: strings.TrimSpace(exp), Send: strings.TrimSpace(snd)})
+			} else {
+				// No "=": send-only step (no expect) — discouraged, but allowed.
+				script = append(script, peer.ScriptStep{Send: strings.TrimSpace(f)})
 			}
 		}
 		if len(script) == 0 {
-			return RFPeer{}, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q: via: needs at least one connect command", entry)
+			return RFPeer{}, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q: via: needs at least one connect step", entry)
 		}
 		return RFPeer{PeerCall: peerCall, OpenTo: openTo, Script: script}, nil
 	default:
-		return RFPeer{}, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q must be via:CALL or via:PEERCALL|OPENTARGET|CMD…", entry)
+		return RFPeer{}, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q must be via:CALL or via:PEERCALL|OPENTARGET|EXPECT=SEND…", entry)
 	}
 }
 

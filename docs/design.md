@@ -433,13 +433,21 @@ pdn nodes + a real LinBPQ — see `docs/LAB.md`.
 opens an AX.25 SABM straight out the node's first port, so it only reaches a peer
 one hop away. To reach a chat node across a multi-hop packet network, peer with a
 **connect script** (`PDN_BPQCHAT_PEERS=via:…`), mirroring BPQ's OtherChatNodes
-scripts: open to a node we can reach, then type node-prompt `C` commands to walk
-onward, the last landing on the peer's chat app (PDN ≥0.9.0 connects the node
-prompt to a local app by its SSID). `via:G0BBB-4` is the two-node shortcut —
-open to `G0BBB`'s node prompt, then `C G0BBB-4`; `via:PEER|OPENTARGET|CMD|CMD…`
-is the explicit multi-hop form. The script isn't prompt-parsed (a node prompt has
-no line terminator); it paces the commands and lets the outbound handshake's
-`readUntil(banner)` skip the intervening node chatter (`Link.RunWithScript`).
+scripts: open to a node we can reach, then walk node-prompt `C` commands to the
+peer's chat app, the last hop landing on it (PDN ≥0.9.x connects the node prompt
+to a local app by its SSID). It is **expect/send, not pacing**
+(`peer.ScriptStep{Expect, Send}` + `Link.RunWithScript`): each step waits until
+the node prompt is actually seen before issuing the next `C`, so a multi-hop walk
+is reliable when round-trip times vary. A node prompt has no line terminator, so
+`expect` matches against accumulated bytes one byte at a time (never over-reading
+past the match), bounded by a read deadline (`rhpStream.SetReadDeadline`).
+`via:G0BBB-4` is the two-node shortcut (open `G0BBB`, expect `G0BBB>`, send
+`C G0BBB-4`); `via:PEER|OPENTARGET|EXPECT=SEND|EXPECT=SEND…` is the explicit
+multi-hop form. *Lab status (2026-06-13):* the feature is unit-proven
+(`TestConnectScriptDial`); a live walk across pdn 0.9.1 routing nodes is blocked
+because an app's RHP `open` to a remote node currently arrives as node/interlink
+traffic (no console — interlinks carry 0xCF datagrams, not prompt text) rather
+than a console-bridged user circuit under the app callsign (`docs/LAB.md`).
 
 **W7 — packaging:** the self-contained `.deb` app package (amd64/arm64/armhf),
 default-off, code-vs-state split — see `docs/release-pipeline.md`.

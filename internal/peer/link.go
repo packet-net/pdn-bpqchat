@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,7 @@ type Link struct {
 	log      func(string, ...any)
 
 	keepaliveEvery time.Duration
-	connectPace    time.Duration
+	expectTimeout  time.Duration
 
 	wmu      sync.Mutex
 	lastSeen time.Time
@@ -43,14 +44,14 @@ type Link struct {
 
 // Config configures a Link.
 type Config struct {
-	PeerCall    string               // the peer node's chat callsign
-	OurNode     string               // our chat callsign
-	Version     string               // our version string (advertised in keepalives)
-	Outbound    bool                 // true if we dialled the peer
-	Greeted     bool                 // inbound only: the demux already sent the banner and read *RTL
-	Log         func(string, ...any) // optional
-	Keepalive   time.Duration        // optional override (tests use a short value)
-	ConnectPace time.Duration        // optional connect-script pacing override (tests use a short value)
+	PeerCall      string               // the peer node's chat callsign
+	OurNode       string               // our chat callsign
+	Version       string               // our version string (advertised in keepalives)
+	Outbound      bool                 // true if we dialled the peer
+	Greeted       bool                 // inbound only: the demux already sent the banner and read *RTL
+	Log           func(string, ...any) // optional
+	Keepalive     time.Duration        // optional override (tests use a short value)
+	ExpectTimeout time.Duration        // optional connect-script expect timeout override (tests use a short value)
 }
 
 // NewLink builds a link over rw, bridging it to router/hub.
@@ -64,8 +65,8 @@ func NewLink(rw io.ReadWriteCloser, router *Router, hub *chat.Hub, cfg Config) *
 	if cfg.Version == "" {
 		cfg.Version = "pdn"
 	}
-	if cfg.ConnectPace <= 0 {
-		cfg.ConnectPace = ConnectScriptPace
+	if cfg.ExpectTimeout <= 0 {
+		cfg.ExpectTimeout = DefaultExpectTimeout
 	}
 	return &Link{
 		peerCall:       strings.ToUpper(cfg.PeerCall),
@@ -78,7 +79,7 @@ func NewLink(rw io.ReadWriteCloser, router *Router, hub *chat.Hub, cfg Config) *
 		greeted:        cfg.Greeted,
 		log:            cfg.Log,
 		keepaliveEvery: cfg.Keepalive,
-		connectPace:    cfg.ConnectPace,
+		expectTimeout:  cfg.ExpectTimeout,
 	}
 }
 
@@ -109,34 +110,76 @@ func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 	return l.serve(ctx, br, nil)
 }
 
-// ConnectScriptPace is the delay before each connect-script command, giving the
-// previous hop time to connect and present its node prompt before the next
-// command is sent. Connect scripts don't parse prompts (a node prompt has no
-// line terminator, so it can't be read as a line); they pace the commands and
-// rely on the outbound handshake's readUntil(banner) to skip all the
-// intermediate node chatter once the final hop lands on the chat app.
-const ConnectScriptPace = 1500 * time.Millisecond
+// ScriptStep is one step of an outbound connect script: wait until Expect is seen
+// on the stream (case-insensitive substring; "" = don't wait), then send Send as
+// a CR-terminated line ("" = send nothing). This is expect/send — NOT pacing — so
+// each hop is confirmed (its node prompt seen) before the next command is issued,
+// which is what makes a multi-hop walk reliable when round-trip times vary.
+type ScriptStep struct {
+	Expect string
+	Send   string
+}
 
-// RunWithScript walks an outbound connect script before the chat handshake: the
-// caller has already opened a connection to the FIRST hop (e.g. a remote node's
-// prompt); each command in script is then sent, paced, to walk onward, the last
-// landing on the peer's chat app. The normal outbound handshake follows — its
-// readUntil(banner) skips the node welcomes/prompts/"Connected" lines the walk
-// produced. An empty script behaves like Run (a direct dial).
-func (l *Link) RunWithScript(ctx context.Context, script []string) error {
+// DefaultExpectTimeout bounds the wait for each step's Expect.
+const DefaultExpectTimeout = 30 * time.Second
+
+// RunWithScript walks an outbound connect script before the chat handshake. The
+// caller has already opened a connection to the FIRST hop (a remote node's
+// prompt); each step then waits for its Expect and sends its Send to walk onward,
+// the last landing on the peer's chat app. The normal outbound handshake follows
+// — its readUntil(banner) consumes the final connect's result up to the chat
+// banner. An empty script behaves like Run (a direct dial).
+func (l *Link) RunWithScript(ctx context.Context, steps []ScriptStep) error {
 	br := bufio.NewReader(l.rw)
-	for _, cmd := range script {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(l.connectPace):
+	for _, st := range steps {
+		if st.Expect != "" {
+			if err := l.expect(ctx, br, st.Expect); err != nil {
+				return fmt.Errorf("peer %s: connect-script expect %q: %w", l.peerCall, st.Expect, err)
+			}
 		}
-		if _, err := io.WriteString(l.rw, cmd+"\r"); err != nil {
-			return err
+		if st.Send != "" {
+			if _, err := io.WriteString(l.rw, st.Send+"\r"); err != nil {
+				return err
+			}
+			l.log("connect-script: matched %q, sent %q (reaching %s)", st.Expect, st.Send, l.peerCall)
 		}
-		l.log("connect-script: sent %q to reach %s", cmd, l.peerCall)
 	}
 	return l.RunWithReader(ctx, br)
+}
+
+// expect reads from br until the recent bytes contain want (case-insensitive),
+// bounded by the link's expect timeout. It reads ONE byte at a time so it never
+// consumes past the match — leaving br positioned for the next step or the
+// handshake. A node prompt has no line terminator, so this matches against
+// accumulated bytes, not lines.
+func (l *Link) expect(ctx context.Context, br *bufio.Reader, want string) error {
+	deadline := time.Now().Add(l.expectTimeout)
+	if d, ok := l.rw.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = d.SetReadDeadline(deadline)
+		defer func() { _ = d.SetReadDeadline(time.Time{}) }() // clear for the line-based handshake
+	}
+	wantUp := strings.ToUpper(want)
+	keep := len(want) + 64
+	window := make([]byte, 0, keep*2)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		b, err := br.ReadByte()
+		if err != nil {
+			return err
+		}
+		window = append(window, b)
+		if len(window) > keep*2 {
+			window = window[len(window)-keep:]
+		}
+		if strings.Contains(strings.ToUpper(string(window)), wantUp) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return os.ErrDeadlineExceeded
+		}
+	}
 }
 
 // serve runs the post-handshake link lifecycle: register with the router, tell

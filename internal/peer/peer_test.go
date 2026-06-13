@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"net"
@@ -12,6 +11,26 @@ import (
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
 )
+
+// readLineConn reads one CR/LF-terminated line from a net.Conn one byte at a time
+// (no buffering past the terminator), so a subsequent reader on the same conn
+// loses nothing.
+func readLineConn(c net.Conn) (string, error) {
+	var b []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := c.Read(buf)
+		if n > 0 {
+			if buf[0] == '\r' || buf[0] == '\n' {
+				return string(b), nil
+			}
+			b = append(b, buf[0])
+		}
+		if err != nil {
+			return string(b), err
+		}
+	}
+}
 
 func TestCodecRoundTrip(t *testing.T) {
 	raw := encodeData("GB7AAA", "G8PZT", "hello there world")
@@ -316,12 +335,14 @@ func TestConnectScriptDial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Server side: act as the node prompt — read the "C GB7BBB-4" connect command,
-	// emit a little node chatter, then become the chat node (ServeInboundIP greets
-	// + runs the link). The handshake's readUntil(banner) must skip the chatter.
+	// Server side: act as the node prompt — emit a welcome + the "GB7BBB>" prompt
+	// (no line terminator, as a real node prompt has none), wait for the dialer's
+	// "C GB7BBB-4" connect command (expect must have matched the prompt first),
+	// emit a little chatter, then become the chat node (ServeInboundIP). The
+	// handshake's readUntil(banner) must skip the chatter.
 	go func() {
-		br := bufio.NewReader(bConn)
-		line, err := readLine(br)
+		_, _ = io.WriteString(bConn, "Welcome to GB7BBB node\rGB7BBB> ")
+		line, err := readLineConn(bConn)
 		if err != nil || !strings.EqualFold(strings.TrimSpace(line), "C GB7BBB-4") {
 			t.Errorf("server got connect cmd %q, want \"C GB7BBB-4\"", line)
 			return
@@ -330,9 +351,10 @@ func TestConnectScriptDial(t *testing.T) {
 		_ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB-4", nil)
 	}()
 
-	// Dialer: PeerCall is the chat callsign GB7BBB-4; the script walks to it.
-	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB-4", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour, ConnectPace: 20 * time.Millisecond})
-	go func() { _ = la.RunWithScript(ctx, []string{"C GB7BBB-4"}) }()
+	// Dialer: PeerCall is the chat callsign GB7BBB-4; the script expects the node
+	// prompt, then sends the connect that reaches the chat app.
+	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB-4", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour, ExpectTimeout: 3 * time.Second})
+	go func() { _ = la.RunWithScript(ctx, []ScriptStep{{Expect: "GB7BBB>", Send: "C GB7BBB-4"}}) }()
 
 	waitFor(t, func() bool { _, ok := b.hub.User(akey); return ok })
 	a.hub.Post(context.Background(), akey, "reached via script")

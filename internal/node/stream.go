@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -17,10 +18,11 @@ type rhpStream struct {
 	client *rhp.Client
 	handle int
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []byte
-	closed bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	buf      []byte
+	closed   bool
+	deadline time.Time // read deadline (zero = none); used by the connect-script expect engine
 }
 
 func newRhpStream(client *rhp.Client, handle int) *rhpStream {
@@ -47,12 +49,40 @@ func (s *rhpStream) markClosed() {
 	s.mu.Unlock()
 }
 
-// Read blocks until data is buffered or the stream closes (then io.EOF once the
-// buffer drains).
+// SetReadDeadline bounds subsequent Reads; a zero time clears it. Lets the
+// connect-script expect engine time out waiting for a node prompt instead of
+// hanging on a wrong/missing one. Satisfies the deadline interface the expect
+// engine probes for (the same shape as net.Conn).
+func (s *rhpStream) SetReadDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.deadline = t
+	s.cond.Broadcast() // re-evaluate any waiter against the new deadline
+	s.mu.Unlock()
+	return nil
+}
+
+// Read blocks until data is buffered, the stream closes (then io.EOF once the
+// buffer drains), or the read deadline passes (then os.ErrDeadlineExceeded).
 func (s *rhpStream) Read(p []byte) (int, error) {
 	s.mu.Lock()
 	for len(s.buf) == 0 && !s.closed {
-		s.cond.Wait()
+		if !s.deadline.IsZero() {
+			now := time.Now()
+			if !now.Before(s.deadline) {
+				s.mu.Unlock()
+				return 0, os.ErrDeadlineExceeded
+			}
+			// Wake the cond.Wait at the deadline so the loop re-checks it.
+			timer := time.AfterFunc(s.deadline.Sub(now), func() {
+				s.mu.Lock()
+				s.cond.Broadcast()
+				s.mu.Unlock()
+			})
+			s.cond.Wait()
+			timer.Stop()
+		} else {
+			s.cond.Wait()
+		}
 	}
 	if len(s.buf) == 0 && s.closed {
 		s.mu.Unlock()

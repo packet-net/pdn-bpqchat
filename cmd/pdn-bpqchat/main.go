@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -62,8 +63,23 @@ func servePeerListener(ctx context.Context, addr, ourNode string, router *peer.R
 	}
 }
 
+// logLevel maps PDN_LOG_LEVEL (debug|info|warn|error) to a slog level; defaults
+// to info. Debug surfaces the peer/connect-script trace.
+func logLevel() slog.Level {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PDN_LOG_LEVEL"))) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 
 	cfg, err := config.Load()
 	if err != nil {
