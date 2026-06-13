@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
 	"github.com/m0lte/pdn-bpqchat/internal/config"
 	"github.com/m0lte/pdn-bpqchat/internal/node"
+	"github.com/m0lte/pdn-bpqchat/internal/peer"
 	"github.com/m0lte/pdn-bpqchat/internal/store/sqlite"
 	"github.com/m0lte/pdn-bpqchat/internal/web"
 )
@@ -23,6 +25,8 @@ import (
 // version is stamped by the release workflow via -ldflags "-X main.version=…";
 // "dev" for local builds.
 var version = "dev"
+
+func sprintfMain(format string, a ...any) string { return fmt.Sprintf(format, a...) }
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -80,6 +84,21 @@ func main() {
 		}, hub, log)
 		link.Run(ctx)
 	}()
+
+	// Peering: the relay router plus an outbound link to each configured peer
+	// (telnet/IP node-link transport; RF-via-RHP peering in W6).
+	router := peer.NewRouter(hub)
+	defer router.Close()
+	for _, p := range cfg.Peers {
+		p := p
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Info("starting peer link", "peer", p.Call, "addr", p.Addr)
+			peer.DialAndServe(ctx, p.Addr, p.Call, cfg.ChatCallsign(), router, hub,
+				func(f string, a ...any) { log.Info("peer", "msg", sprintfMain(f, a...)) })
+		}()
+	}
 
 	wg.Wait()
 	log.Info("pdn-bpqchat stopped")
