@@ -1,10 +1,10 @@
 # pdn-bpqchat — design
 
 **Status:** W0 (Go scaffold + RHPv2 client + do-nothing daemon) **done**; W1
-(vendor BPQ source + this spec) **done — awaiting review**. This document is
-the **gate before W2 protocol code** (HANDOVER.md §7): no chat-domain or
-wire-protocol implementation lands until the wire spec and the loop-control
-design below are reviewed.
+(vendor BPQ source + this spec) **done**; W2 (the pure `internal/chat` domain +
+SQLite store) **done — see §11**. The open design questions are resolved (§9).
+Next is W3 (the RF user session: the BPQ-compatible `/command` parser wired to
+the hub).
 
 **Read order:** `HANDOVER.md` → this file → the vendored ground truth under
 `reference/linbpq-chat/` (provenance in its `PROVENANCE.md`).
@@ -320,7 +320,9 @@ since that — not a wire id — is what prevents the storm.
   **bounded delta reconcile**, not a blind re-dump (§4.5).
 - **Default topic:** **`General`** (decision 2026-06-13, §9) — every user (RF and
   web) lands in the topic named `General` on connect; topic names are
-  case-insensitive (§3.5).
+  case-insensitive (§3.5). This is **BPQ's own default**, verified in the source
+  (`bpqchat.h:202` — `#define deftopic "General"`), so a pdn-bpqchat user and a
+  BPQ-node user land in the **same shared room** with no reconciliation needed.
 
 ## 7. Persistence (SQLite, from W2)
 
@@ -378,16 +380,38 @@ Confirmed here:
   content-hash backstop proves insufficient in practice — explicitly **not**
   designed in now.
 
-**Still open** (flag early; don't block W2):
-- **Which real peer(s)** to link to for the live network — blocked on Tom
-  arranging a parent/peer chat node (as above).
-- **The exact `General`-topic semantics on the BPQ wire** — confirm in W5 that
-  landing every user in `General` interoperates cleanly with a BPQ node's own
-  default topic (do they reconcile to one shared room, or stay distinct?).
-  Derive from the oracle.
+**Live test environment (Tom, 2026-06-13):** a **real BPQ node with a packet.net
+lab adjacent to it, linked over AX.25**, exists for end-to-end testing. This is
+the eventual **live RF-via-RHP peer** (W6) — the docker oracle covers the W5 dev
+loop, then we link to the real BPQ node over AX.25 through the lab node. So the
+"which real peer" item is effectively unblocked for the *interop* pass; only a
+wider *public* parent chat node (to join the live network at large) remains a
+later arrangement.
 
-## 10. What W0 delivered (this branch)
+**Confirmed resolved:**
+- The `General`-topic interop question (was open): **`General` is BPQ's own
+  default** (`bpqchat.h:202`), so RF, web, and BPQ users share one room with no
+  reconciliation — see §6.
 
+## 11. What's delivered (this branch)
+
+**W2 — the pure chat domain + persistence:**
+- `internal/chat` — the **host-free core**: `Hub` (the in-RAM authority for
+  users, presence, topics, and the mesh node graph), an `Event` stream
+  (join/leave/message/private/topic-change/user-info/node-link, mapping 1:1 to
+  the BPQ record types) fanned out to subscribers, the `Store` persistence seam
+  with an in-memory implementation, the **`SeenSet`** content-hash de-dup
+  backstop (§5), and **`SynthID`** (the deterministic cross-mesh message id).
+  Length-capped, case-insensitive topics, callsign canonicalisation —
+  unit-tested (join→General, post fan-out + history, topic moves, private
+  messaging, link-drop user cascade, dedup, loopback suppression).
+- `internal/store/sqlite` — the durable `chat.Store` over **pure-Go
+  `modernc.org/sqlite`** (keeps the release binary CGO-free/static): the message
+  log (idempotent saves, oldest-first history, case-insensitive topic, since/
+  limit) + a config KV. Cross-compiles for amd64/arm64/arm with `CGO_ENABLED=0`;
+  unit-tested.
+
+**W0 — scaffold + RHP client + do-nothing daemon:**
 - `internal/rhp` — a working, tested Go **RHPv2 client**: 2-byte framing, the
   message catalogue, Latin-1 data encoding, request/reply correlation by `id`,
   async push dispatch (`accept`/`recv`/`status`/`close`), and the
@@ -403,5 +427,8 @@ Confirmed here:
 - `reference/linbpq-chat/` — the vendored BPQ chat source (pinned, provenance
   recorded) this spec is derived from.
 
-**Next (gated on review of this doc): W2 — the pure `internal/chat` domain
-(topics, users, presence, message log, SQLite), unit-tested, host-free.**
+**Next: W3 — the RF user session.** Accept inbound RF connects over RHP (the
+`accept` push), assemble CR-terminated lines (length-capped, hostile-input-safe,
+§4.4), parse the BPQ-compatible `/command` set (§3.5), and drive the `Hub` —
+subscribing each session to the event stream so RF users see each other (and,
+from W4, web users) in real time.
