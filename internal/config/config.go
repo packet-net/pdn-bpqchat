@@ -38,13 +38,14 @@ type Config struct {
 	StateDir string
 	// WebPort is the loopback port the web tile binds.
 	WebPort int
-	// Peers are the chat nodes to link to (outbound), from PDN_BPQCHAT_PEERS.
+	// Peers are the IP/telnet outbound peer chat nodes (PDN_BPQCHAT_PEERS).
 	Peers []Peer
+	// RFPeers are outbound peer chat callsigns dialled over AX.25 via RHP (W6).
+	RFPeers []string
 }
 
-// Peer is a configured outbound peer chat node: its callsign and the TCP
-// address of its node-link transport (the telnet/IP dev-loop transport,
-// design.md §9). RF-via-RHP peering lands in W6.
+// Peer is a configured outbound peer chat node reachable over a TCP node-link
+// transport (the telnet/IP dev-loop transport, design.md §9).
 type Peer struct {
 	Call string
 	Addr string // host:port
@@ -83,35 +84,49 @@ func Load() (*Config, error) {
 		}
 		c.SSID = ssid
 	}
-	peers, err := parsePeers(os.Getenv("PDN_BPQCHAT_PEERS"))
+	peers, rfPeers, err := parsePeers(os.Getenv("PDN_BPQCHAT_PEERS"))
 	if err != nil {
 		return nil, err
 	}
 	c.Peers = peers
+	c.RFPeers = rfPeers
 	return c, nil
 }
 
-// parsePeers parses PDN_BPQCHAT_PEERS — a comma-separated list of
-// CALLSIGN@host:port entries (e.g. "GB7CHT@127.0.0.1:8010,GB7RDG@10.0.0.2:8010").
-func parsePeers(s string) ([]Peer, error) {
+// parsePeers parses PDN_BPQCHAT_PEERS — a comma-separated list of outbound peer
+// entries, each either an IP/telnet peer "CALLSIGN@host:port" or an RF peer
+// "rf:CALLSIGN" (dialled over AX.25 via RHP). E.g.
+// "GB7CHT@127.0.0.1:8010,rf:GB7RDG-1".
+func parsePeers(s string) ([]Peer, []string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
-	var peers []Peer
+	var (
+		peers   []Peer
+		rfPeers []string
+	)
 	for _, entry := range strings.Split(s, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
+		if call, ok := strings.CutPrefix(entry, "rf:"); ok {
+			call = strings.ToUpper(strings.TrimSpace(call))
+			if call == "" {
+				return nil, nil, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q must be rf:CALLSIGN", entry)
+			}
+			rfPeers = append(rfPeers, call)
+			continue
+		}
 		call, addr, ok := strings.Cut(entry, "@")
 		call, addr = strings.TrimSpace(call), strings.TrimSpace(addr)
 		if !ok || call == "" || addr == "" {
-			return nil, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q must be CALLSIGN@host:port", entry)
+			return nil, nil, fmt.Errorf("config: PDN_BPQCHAT_PEERS entry %q must be CALLSIGN@host:port or rf:CALLSIGN", entry)
 		}
 		peers = append(peers, Peer{Call: strings.ToUpper(call), Addr: addr})
 	}
-	return peers, nil
+	return peers, rfPeers, nil
 }
 
 // DBPath is the SQLite path under the state dir (used from W2 on).

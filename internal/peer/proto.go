@@ -42,6 +42,14 @@ const bannerPrefix = "[BPQCHATSERVER-"
 
 func banner() string { return bannerPrefix + "pdn]" }
 
+// Banner is the chat-node greeting line (without the trailing CR) that a node
+// sends on every inbound connect, so the demux can send it before deciding
+// whether the caller is a user or a linking peer.
+func Banner() string { return banner() }
+
+// IsRTL reports whether a line is the *RTL node-link login (design.md §3.2).
+func IsRTL(line string) bool { return strings.EqualFold(strings.TrimSpace(line), rtlLogin) }
+
 // Record is one decoded inter-node control record. Raw is the exact wire line
 // (CR stripped) — the relay forwards Raw verbatim, exactly as BPQ does
 // (HanksRT.c:echo relays the received buffer), so re-encoding never drifts.

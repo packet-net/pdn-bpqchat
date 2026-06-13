@@ -317,7 +317,8 @@ func (s *Session) inMyTopic(topic string) bool {
 }
 
 func (s *Session) greet() {
-	s.send("[BPQCHATSERVER-pdn]\r")
+	// The node layer sends the [BPQCHATSERVER-…] banner before dispatch; the
+	// session adds the human welcome.
 	s.sendf("Welcome to the %s chat node, %s.", s.hub.OurNode(), s.key.Call)
 	s.sendLine("You are in topic " + chat.DefaultTopic + ". Type /H for help.")
 	s.showUsers()

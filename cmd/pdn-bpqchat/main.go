@@ -71,7 +71,12 @@ func main() {
 		}
 	}()
 
-	// RHP attachment: bind the callsign, serve inbound RF users.
+	// Peering: the relay router (shared by RF and IP peers).
+	router := peer.NewRouter(hub)
+	defer router.Close()
+
+	// RHP attachment: bind the callsign; serve inbound RF users and inbound peer
+	// links; dial configured RF peers over AX.25.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -81,14 +86,12 @@ func main() {
 			User:         cfg.RHPUser,
 			Pass:         cfg.RHPPass,
 			ChatCallsign: cfg.ChatCallsign(),
-		}, hub, log)
+			RFPeers:      cfg.RFPeers,
+		}, hub, router, log)
 		link.Run(ctx)
 	}()
 
-	// Peering: the relay router plus an outbound link to each configured peer
-	// (telnet/IP node-link transport; RF-via-RHP peering in W6).
-	router := peer.NewRouter(hub)
-	defer router.Close()
+	// Outbound IP/telnet peer links.
 	for _, p := range cfg.Peers {
 		p := p
 		wg.Add(1)

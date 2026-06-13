@@ -31,6 +31,7 @@ type Link struct {
 	router   *Router
 	hub      *chat.Hub
 	outbound bool
+	greeted  bool
 	log      func(string, ...any)
 
 	keepaliveEvery time.Duration
@@ -45,6 +46,7 @@ type Config struct {
 	OurNode   string               // our chat callsign
 	Version   string               // our version string (advertised in keepalives)
 	Outbound  bool                 // true if we dialled the peer
+	Greeted   bool                 // inbound only: the demux already sent the banner and read *RTL
 	Log       func(string, ...any) // optional
 	Keepalive time.Duration        // optional override (tests use a short value)
 }
@@ -68,6 +70,7 @@ func NewLink(rw io.ReadWriteCloser, router *Router, hub *chat.Hub, cfg Config) *
 		router:         router,
 		hub:            hub,
 		outbound:       cfg.Outbound,
+		greeted:        cfg.Greeted,
 		log:            cfg.Log,
 		keepaliveEvery: cfg.Keepalive,
 	}
@@ -87,7 +90,13 @@ func (l *Link) sendRaw(raw string) error {
 // Run performs the handshake, registers with the router, and serves the link
 // until ctx is cancelled, the transport closes, or the link times out.
 func (l *Link) Run(ctx context.Context) error {
-	br := bufio.NewReader(l.rw)
+	return l.RunWithReader(ctx, bufio.NewReader(l.rw))
+}
+
+// RunWithReader is Run with a caller-supplied reader — used by the inbound demux,
+// which has already consumed the banner exchange and must not lose bytes it
+// buffered while reading the *RTL line.
+func (l *Link) RunWithReader(ctx context.Context, br *bufio.Reader) error {
 	if err := l.handshake(br); err != nil {
 		return fmt.Errorf("peer %s: handshake: %w", l.peerCall, err)
 	}
@@ -134,12 +143,15 @@ func (l *Link) handshake(br *bufio.Reader) error {
 		}
 		return l.readUntil(br, func(s string) bool { return strings.HasPrefix(strings.ToUpper(s), "OK") })
 	}
-	// Inbound: send the banner, wait for *RTL, reply OK + a keepalive.
-	if err := l.sendRaw(banner()); err != nil {
-		return err
-	}
-	if err := l.readUntil(br, func(s string) bool { return strings.EqualFold(strings.TrimSpace(s), rtlLogin) }); err != nil {
-		return err
+	// Inbound: send the banner and wait for *RTL — unless the demux already did
+	// that (Greeted), in which case we just reply OK + a keepalive and serve.
+	if !l.greeted {
+		if err := l.sendRaw(banner()); err != nil {
+			return err
+		}
+		if err := l.readUntil(br, func(s string) bool { return IsRTL(s) }); err != nil {
+			return err
+		}
 	}
 	if err := l.sendRaw("OK"); err != nil {
 		return err

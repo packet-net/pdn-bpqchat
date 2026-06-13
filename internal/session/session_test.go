@@ -61,12 +61,9 @@ func TestSessionGreetsAndJoins(t *testing.T) {
 	}
 	defer s.Close()
 
-	waitFor(t, func() bool { return strings.Contains(conn.text(), "BPQCHATSERVER") })
+	waitFor(t, func() bool { return strings.Contains(conn.text(), "Welcome") })
 	if u := h.Users(); len(u) != 1 || u[0].Call != "G8PZT" {
 		t.Fatalf("user not joined: %+v", u)
-	}
-	if !strings.Contains(conn.text(), "Welcome") {
-		t.Fatalf("no welcome in:\n%s", conn.text())
 	}
 }
 

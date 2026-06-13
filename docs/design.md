@@ -1,10 +1,13 @@
 # pdn-bpqchat — design
 
-**Status:** W0 (Go scaffold + RHPv2 client + do-nothing daemon) **done**; W1
-(vendor BPQ source + this spec) **done**; W2 (the pure `internal/chat` domain +
-SQLite store) **done — see §11**. The open design questions are resolved (§9).
-Next is W3 (the RF user session: the BPQ-compatible `/command` parser wired to
-the hub).
+**Status:** **W0–W7 all implemented** (§11). W0 scaffold + RHPv2 client; W1
+vendor + this spec; W2 the pure `internal/chat` domain + SQLite; W3 the RF user
+session; W4 the web chat; W5 peering + loop control (the cycle-no-storm gate is
+green); W6 RF peering (inbound peer links + outbound RF dials) + multi-peer +
+resilience; W7 the `.deb` app package. The open design questions are resolved
+(§9). Remaining: the live net-sim RF interop pass against the docker BPQ oracle
+and the real BPQ node (needs docker / the lab — see §6), and cutting a tagged
+release.
 
 **Read order:** `HANDOVER.md` → this file → the vendored ground truth under
 `reference/linbpq-chat/` (provenance in its `PROVENANCE.md`).
@@ -394,6 +397,35 @@ later arrangement.
   reconciliation — see §6.
 
 ## 11. What's delivered (this branch)
+
+**W3 — RF user session (`internal/session`, `internal/node`):** a hostile-input-safe
+line assembler (length-capped, mixed terminators, control-byte sanitising), the
+BPQ-Chat `/command` parser (`/U /T /N /Q /S /P /K /B /QUIT /H` + plain text →
+topic post), hub-event rendering with topic isolation and private addressing.
+`internal/node` is the RHP↔hub adapter: it binds the callsign, and **demuxes**
+each inbound AX.25 child into a user session or — if the first line is `*RTL` — an
+inbound peer link. Unit-tested (session behaviour; demux peer-vs-user).
+
+**W4 — web chat (`internal/web`):** a full SSE browser UI at `/apps/bpqchat/`
+sharing the hub and topics with RF/mesh users — `/events` (snapshot + live,
+filtered per viewer), `/send`, `/topic`, `/users`, `/history`; per-identity
+presence refcount; app-gateway identity; loopback-only; embedded JS client.
+httptest-tested.
+
+**W5 — peering + loop control (`internal/peer`):** the BPQ link codec, the `*RTL`
+handshake, keepalive/poll, and the **Router** — local-origin fan-out + peer-origin
+relay with ingress exclusion and the content-hash seen-set backstop. The
+acceptance gate is green: a 3-node cycle delivers exactly once with bounded
+traffic; a diamond proves two-path dedup; a real TCP link propagates end to end.
+
+**W6 — RF peering + multi-peer + resilience:** inbound peer links over AX.25 (the
+demux), outbound RF peer dials via RHP `open` (an `io.ReadWriteCloser` over an RHP
+child unifies user/peer/transport), multiple simultaneous peers (the Router is
+N-peer by construction), keepalive/timeout/backoff reconnect, and stateTell
+resync on link-up. Config: `PDN_BPQCHAT_PEERS=CALL@host:port,rf:CALL`.
+
+**W7 — packaging:** the self-contained `.deb` app package (amd64/arm64/armhf),
+default-off, code-vs-state split — see `docs/release-pipeline.md`.
 
 **W2 — the pure chat domain + persistence:**
 - `internal/chat` — the **host-free core**: `Hub` (the in-RAM authority for

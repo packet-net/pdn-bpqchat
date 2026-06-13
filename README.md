@@ -5,13 +5,14 @@ first-class multi-user chat for RF users and the node owner (via a **web chat
 tile**) that **peers with the BPQ Chat network**. Shipped as a **default-off
 pdn app package**; a single static Go binary.
 
-> Status: **W0–W2 complete.** The Go scaffold, a working RHPv2 client, and the
-> do-nothing supervised daemon are in place (W0); the BPQ chat protocol is
-> derived and specified in [`docs/design.md`](docs/design.md) with the BPQ
-> source vendored under [`reference/`](reference/linbpq-chat/) (W1); and the
-> pure, host-free chat domain (`internal/chat`) plus the SQLite store
-> (`internal/store/sqlite`) are built and unit-tested (W2). Next is **W3** — the
-> RF user session (the BPQ `/command` parser wired to the hub).
+> Status: **W0–W7 implemented.** A working RHPv2 client (W0), the BPQ protocol
+> derived in [`docs/design.md`](docs/design.md) from the vendored source (W1),
+> the pure chat domain + SQLite (W2), the RF user session + `/command` parser
+> (W3), the full SSE web chat (W4), node-to-node peering with loop/duplicate
+> suppression and a green cycle-no-storm gate (W5), RF peering + multi-peer +
+> resilience (W6), and the self-contained `.deb` app package (W7). Remaining: the
+> live net-sim/RF interop pass against a real BPQ node (needs docker / the lab),
+> and cutting a tagged release.
 
 ## What it is
 
@@ -38,6 +39,9 @@ internal/config      supervisor-env → config; derives the on-air callsign
 internal/web         the loopback web tile (W0 placeholder; full chat in W4)
 internal/chat        the pure chat domain: hub, events, topics, presence, dedup — W2 ✅, tested
 internal/store/sqlite  durable message log + config KV (pure-Go SQLite) — W2 ✅, tested
+internal/session     RF user session: line assembler + BPQ /command parser — W3 ✅, tested
+internal/node        RHP↔hub adapter; demuxes inbound users vs peer links — W3/W6 ✅, tested
+internal/peer        BPQ node-to-node linking: codec, handshake, loop-control relay — W5/W6 ✅, tested
 docs/design.md       the BPQ wire spec, deficiency analysis, loop-control design (W1)
 reference/           vendored LinBPQ chat source (pinned; provenance recorded)
 docker/              the LinBPQ chat interop oracle (compose + bpq32.cfg)
