@@ -173,31 +173,26 @@ PDN_BPQCHAT_PEERS=via:G0BBB-4
 PDN_BPQCHAT_PEERS="via:GB7DDD-4|GB7BBB|GB7BBB>=C GB7CCC|GB7CCC>=C GB7DDD|GB7DDD>=C GB7DDD-4"
 ```
 
-The multi-hop lab (`docker/lab-tier2/multihop/`, PDN 0.9.2) is a chain
+The multi-hop lab (`docker/lab-tier2/multihop/`, PDN 0.9.3) is a chain
 `NODEA—NODEB—NODEC—NODED` over AXUDP where **B and C run no chat app** — pure
 routing nodes the script walks through. Use `PDN_LOG_LEVEL=debug` to see the
 `connect-script: matched … sent …` trace.
 
-> **Status (2026-06-13):** the expect engine is unit-proven
-> (`TestConnectScriptDial`), and the node prompts/`C`-walk were verified by hand
-> (`C GB7CCC` → `Connected to GB7CCC.\r\n…GB7CCC> `).
+> **Status — validated end-to-end on PDN 0.9.3 (2026-06-13).** The full walk runs:
+> `connect-script: matched "GB7BBB>", sent "C GB7CCC"` → `matched "GB7CCC>", sent
+> "C GB7DDD"` → `matched "GB7DDD>", sent "C GB7DDD-4"`, then pdnD logs `inbound
+> peer link peer=GB7AAA-4` and messages flow both ways (pdnA `/send` → pdnD
+> `/history` as `from GB7AAA`, and back) — across the two **non-chat** routing
+> nodes GB7BBB and GB7CCC. It took three fixes to get here:
 >
-> **0.9.2** added the console over RHP, and a **recv-race in pdn-bpqchat was fixed**
-> (`internal/node`: an outbound `open`'s first `recv` could arrive before the
-> stream was registered — pdn replies to `open` only after the connect resolves
-> and a node sends its prompt immediately, so the prompt was dropped). With that,
-> the connect script now walks correctly end to end on 0.9.2: verified
-> `connect-script: matched "GB7BBB>", sent "C GB7BBB-4"` and the peer's app
-> receiving the inbound.
+> - **pdn-bpqchat recv-race** (this repo, `internal/node`): an outbound `open`'s
+>   first `recv` was dropped because the stream was registered after `client.Open`
+>   returned — fixed by buffering early pushes per handle.
+> - **PDN 0.9.2**: serve the node console over an RHP `open` to the node's callsign.
+> - **PDN 0.9.3**: keep the node-prompt→local-app bridge up (it previously connected
+>   then immediately disconnected, so the app's banner never returned).
 >
-> **Remaining blocker — a pdn-node bug:** a node-prompt connect to a *local* app
-> (`C <call>-SSID`, where the SSID is a registered RHP app) connects then
-> **immediately disconnects**, so the app's banner never returns and the `*RTL`
-> handshake can't complete. Minimal repro (one node, no ports): an RHP app binds
-> `GB7BBB-4` (it logs the `accept`), then the node console `C GB7BBB-4` prints
-> `Connecting to GB7BBB-4 on local… / Connected to GB7BBB-4. / Disconnected from
-> GB7BBB-4.` with no app data bridged. The multi-hop lab passes once the local-app
-> bridge stays up.
+> The expect engine is also unit-proven (`TestConnectScriptDial`).
 
 This is the mechanism for scaling chat peering over an AXUDP/NET-ROM backbone
 (`design.md` §W6).
