@@ -16,7 +16,7 @@ name: BPQ Chat
 version: "0.0.1"
 description: BPQ-Chat-compatible chat node — RF + web chat, peering with the BPQ Chat network. Default off.
 icon: chat
-capabilities: [network, web]  # binds its own callsign over RHPv2; serves its own web UI
+capabilities: [packet, web]  # binds its own callsign over RHPv2; serves its own web UI
 
 # The Go daemon pdn supervises while the app is enabled. Users connect to its bound callsign over RF,
 # and the node owner uses the web tile; there is no console `session:` verb.
