@@ -8,8 +8,8 @@ import (
 )
 
 // MaxPayloadLength is the largest payload expressible in the 2-byte length
-// prefix (docs/rhp2-server.md §hello: maxData 65535). It is also the codec
-// frame cap pdn advertises, so a single RHP frame never exceeds it.
+// prefix. It is also the codec frame cap pdn advertises, so a single RHP frame
+// never exceeds it.
 const MaxPayloadLength = 0xFFFF
 
 // writeFrame writes one length-prefixed RHPv2 frame: a 2-byte big-endian
