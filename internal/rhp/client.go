@@ -1,9 +1,9 @@
 // Package rhp is a minimal Go client for the pdn Radio Host Protocol v2
 // (RHPv2 / PWP-0222), the JSON-over-TCP host API a pdn app uses to open and
 // accept AX.25 connections through the node's packet engine. It implements the
-// subset pdn-bpqchat needs — auth, hello, the BSD socket/bind/listen/accept
-// listener path (inbound RF users), and active open/send/close (outbound peer
-// dials) — exactly the surface the wire spec in docs/rhp2-server.md pins.
+// subset pdn-bpqchat needs — auth, the BSD socket/bind/listen/accept listener
+// path (inbound RF users), and active open/send/close (outbound peer dials) —
+// exactly the surface the wire spec in docs/rhp2-server.md pins.
 //
 // It is the W0 deliverable: a working, host-free RHPv2 client, the Go analogue
 // of pdn-bbs/pdn-convers's .NET RhpClient. Higher layers (the chat domain, the
@@ -238,12 +238,6 @@ func (c *Client) writeMessage(msg *Message) error {
 func (c *Client) Authenticate(ctx context.Context, user, pass string) error {
 	_, err := c.roundTrip(ctx, &Message{Type: TypeAuth, User: user, Pass: pass})
 	return err
-}
-
-// Hello performs capability discovery (a pdn extension). A baseline-v2 server
-// without it answers errCode 2, which the caller may treat as "no discovery".
-func (c *Client) Hello(ctx context.Context) (*Message, error) {
-	return c.roundTrip(ctx, &Message{Type: TypeHello})
 }
 
 // Socket creates an unbound ax25/stream socket and returns its handle.

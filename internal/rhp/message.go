@@ -8,8 +8,6 @@ import "encoding/json"
 const (
 	TypeAuth        = "auth"
 	TypeAuthReply   = "authReply"
-	TypeHello       = "hello"
-	TypeHelloReply  = "helloReply"
 	TypeOpen        = "open"
 	TypeOpenReply   = "openReply"
 	TypeSocket      = "socket"
@@ -84,13 +82,6 @@ type Message struct {
 	// auth.
 	User string `json:"user,omitempty"`
 	Pass string `json:"pass,omitempty"`
-
-	// helloReply capability advertisement.
-	Proto   string   `json:"proto,omitempty"`
-	Impl    string   `json:"impl,omitempty"`
-	Pfams   []string `json:"pfams,omitempty"`
-	MaxData *int     `json:"maxData,omitempty"`
-	Enc     string   `json:"enc,omitempty"`
 }
 
 // Err returns the message's errCode (0 if absent), treating a missing field as
