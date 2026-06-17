@@ -27,6 +27,36 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 	return s, ts
 }
 
+// gwPost POSTs body to base+path as a gateway-stamped request, optionally as the
+// given viewer (call ""), and returns the response. All app requests arrive via
+// the gateway (X-Pdn-Gateway: 1), so the tests must mirror that.
+func gwPost(t *testing.T, base, path, call, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+	req.Header.Set("X-Pdn-Gateway", "1")
+	req.Header.Set("Content-Type", "application/json")
+	if call != "" {
+		req.Header.Set("X-Pdn-User", call)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// gwGet GETs base+path as a gateway-stamped request and returns the response.
+func gwGet(t *testing.T, base, path string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+	req.Header.Set("X-Pdn-Gateway", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
@@ -48,6 +78,7 @@ func openStream(t *testing.T, base, call string) (<-chan string, context.CancelF
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/events", nil)
+	req.Header.Set("X-Pdn-Gateway", "1") // requests reach the app only via the gateway
 	if call != "" {
 		req.Header.Set("X-Pdn-User", call)
 	}
@@ -103,20 +134,8 @@ func TestSSEDeliversAnotherUsersMessage(t *testing.T) {
 	drainContains(lines, `"call":"G8PZT"`, time.Second)
 
 	// M0LTE posts via /send; G8PZT's stream must receive it.
-	resp, err := http.Post(ts.URL+"/send", "application/json", strings.NewReader(`{"text":"hi there"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Send as M0LTE by setting the header through a manual request.
-	resp.Body.Close()
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/send", strings.NewReader(`{"text":"from m0lte"}`))
-	req.Header.Set("X-Pdn-User", "M0LTE")
-	req.Header.Set("Content-Type", "application/json")
-	r2, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
+	gwPost(t, ts.URL, "/send", "", `{"text":"hi there"}`).Body.Close()
+	gwPost(t, ts.URL, "/send", "M0LTE", `{"text":"from m0lte"}`).Body.Close()
 
 	if !drainContains(lines, "from m0lte", 2*time.Second) {
 		t.Fatal("G8PZT did not receive M0LTE's message over SSE")
@@ -126,19 +145,13 @@ func TestSSEDeliversAnotherUsersMessage(t *testing.T) {
 func TestSendThenHistory(t *testing.T) {
 	_, ts := testServer(t)
 	// Post as SYSOP (no identity header → owner).
-	r, err := http.Post(ts.URL+"/send", "application/json", strings.NewReader(`{"text":"logged message"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := gwPost(t, ts.URL, "/send", "", `{"text":"logged message"}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusNoContent {
 		t.Fatalf("send status = %d", r.StatusCode)
 	}
 	// History must contain it.
-	hr, err := http.Get(ts.URL + "/history?topic=General")
-	if err != nil {
-		t.Fatal(err)
-	}
+	hr := gwGet(t, ts.URL, "/history?topic=General")
 	defer hr.Body.Close()
 	body := make([]byte, 4096)
 	n, _ := hr.Body.Read(body)
@@ -158,14 +171,7 @@ func TestTopicSwitchIsolation(t *testing.T) {
 	drainContains(mlines, `"call":"M0LTE"`, time.Second)
 
 	post := func(path, body string) {
-		req, _ := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
-		req.Header.Set("X-Pdn-User", "M0LTE")
-		req.Header.Set("Content-Type", "application/json")
-		r, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.Body.Close()
+		gwPost(t, ts.URL, path, "M0LTE", body).Body.Close()
 	}
 	post("/topic", `{"topic":"DX"}`)
 	waitFor(t, func() bool {

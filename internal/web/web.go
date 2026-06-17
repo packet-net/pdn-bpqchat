@@ -88,7 +88,12 @@ func New(port int, callsign string, hub *chat.Hub, log *slog.Logger) *Server {
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/history", s.handleHistory)
 	mux.HandleFunc("/", s.handleIndex)
-	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// gatewayTrust fronts the whole mux: 403 anything not gateway-stamped (except
+	// the daemon's own /healthz probe), capture X-Forwarded-Prefix into context,
+	// and mark responses no-store. Server-rendered pages (claim form, admin
+	// editor) added in later slices build absolute URLs through U()/u() so they
+	// stay inside the app's /apps/bpqchat/ mount.
+	s.srv = &http.Server{Handler: gatewayTrust(mux), ReadHeaderTimeout: 10 * time.Second}
 	return s
 }
 
