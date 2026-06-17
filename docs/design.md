@@ -201,6 +201,48 @@ but **never accept an unlisted inbound link**. Leave room for a per-link shared
 secret between two pdn-bpqchat nodes (negotiated via banner caps), without
 breaking vanilla-BPQ interop.
 
+**Implemented (the inbound peer allow-list).** `internal/peer/allow.go`'s
+`AllowList` is the single **default-deny** admission gate every inbound
+federation link is checked against, and it is enforced **at the ingress** — the
+two places an inbound peer is identified and would otherwise be trusted:
+
+- **RHP / AX.25** (`internal/node/node.go:serveInbound`): once the demux sees the
+  caller's first line is `*RTL` (a node-link login, §3.2), the caller's AX.25
+  callsign is checked against the allow-list **before** the `peer.Link` is built.
+  A non-allow-listed caller is dropped here — the connection is closed, no
+  `peer.Link` is created, no record reaches the Router, the node graph is not
+  touched.
+- **IP transport** (`internal/peer/link.go:ServeInboundIP`): a raw TCP accept has
+  no AX.25 callsign, so the peer's identity is learned from the first control
+  record it sends (its `ncall`, §3.3); the allow-list is checked **before** we
+  reply `OK`, mutate the hub, or relay anything. A non-allow-listed caller never
+  gets the `OK` and its buffered first record is discarded with the connection.
+
+**Rejection behaviour:** drop + log, **no state mutation** — a refused peer never
+enters the node graph, never creates a user, never has a record applied or
+relayed. Each refusal increments an observable `AllowList.Rejected()` counter and
+emits a `WARN` (`inbound peer link REFUSED: not in allow-list`). The gate covers
+**only node links**; inbound human RF *users* are unaffected (a user is not a
+federation peer).
+
+**Configuration:** the allow-list is `PDN_BPQCHAT_PEER_ALLOW` — a comma/space
+separated list of peer chat callsigns (canonicalised: trimmed + upper-cased;
+SSID-exact, so `GB7NDH-3` ≠ `GB7NDH-1`), parsed in `internal/config`. A
+malformed entry (bad SSID, illegal punctuation) is a **hard startup error** so a
+fat-fingered list fails loudly rather than silently admitting/denying the wrong
+peer. The **effective** list (`Config.EffectiveAllow`) unions the explicit
+entries with the callsigns of every **outbound** peer we dial (`PDN_BPQCHAT_PEERS`
+— IP, `rf:`, and `via:` forms): a peer we choose to dial is already trusted, so
+its symmetric inbound link is admitted without listing it twice. With **nothing**
+configured the list is empty and admits **no** inbound peer — the default-deny
+posture. (Live config is supervisor-env driven; the env is re-read when pdn
+restarts the supervised app, which is the app's reload seam — there is no separate
+hot-reload path, matching the rest of the daemon's config model.)
+
+**Still open:** the per-link shared secret between two pdn-bpqchat nodes
+(banner-cap negotiated) remains a future enhancement; the allow-list is the
+shipped containment, sufficient for the GB7RDG on-air validation (issue #3).
+
 ### 4.2 User callsign spoofing across the mesh
 **Confirmed.** `id_join`/`id_data`/`id_send` carry `ucall ncall` with zero
 authentication; a hostile or buggy node can inject any user identity or message.

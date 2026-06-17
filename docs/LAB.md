@@ -130,9 +130,13 @@ host.
 docker compose -f docker/lab-tier2/cycle/compose.cycle.yml up -d --wait
 go build -o /tmp/pdn-bpqchat ./cmd/...
 
-# pdnB — links BPQ over RF and ACCEPTS pdnA's IP peer link:
+# pdnB — links BPQ over RF and ACCEPTS pdnA's IP peer link. The allow-list is
+# default-deny (design.md §4.1), so pdnA (M0LTE-4) must be permitted to link IN —
+# either explicitly via PDN_BPQCHAT_PEER_ALLOW or by also dialling it (a dialled
+# peer is auto-admitted). pdnB only accepts here, so it lists M0LTE-4:
 PDN_NODE_CALLSIGN=G0XYZ PDN_RHP_PORT=9001 PDN_APP_STATE=/tmp/stateB PDN_WEB_PORT=18095 \
-PDN_BPQCHAT_PEERS=rf:GB7PDN-2 PDN_BPQCHAT_PEER_LISTEN=127.0.0.1:18094 /tmp/pdn-bpqchat &
+PDN_BPQCHAT_PEERS=rf:GB7PDN-2 PDN_BPQCHAT_PEER_LISTEN=127.0.0.1:18094 \
+PDN_BPQCHAT_PEER_ALLOW=M0LTE-4 /tmp/pdn-bpqchat &
 
 # pdnA — links BPQ over RF and DIALS pdnB over IP (closing the triangle):
 PDN_NODE_CALLSIGN=M0LTE PDN_RHP_PORT=9000 PDN_APP_STATE=/tmp/stateA PDN_WEB_PORT=18093 \

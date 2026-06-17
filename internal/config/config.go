@@ -55,6 +55,46 @@ type Config struct {
 	// TCP address the node accepts inbound IP peer links on (the accept side of the
 	// pdn↔pdn IP transport). Empty disables inbound IP peering.
 	PeerListen string
+	// PeerAllow is the inbound-peer allow-list (PDN_BPQCHAT_PEER_ALLOW): the
+	// callsigns permitted to link IN to us as federation peers (design.md §4.1).
+	// AX.25 has no link auth, so an inbound link is trusted only by its claimed
+	// callsign; default-deny means an unlisted caller never links. Outbound peers
+	// we dial (Peers/RFPeers) are folded into the EFFECTIVE list automatically, so
+	// only peers that dial US but that we never dial out to need listing here.
+	PeerAllow []string
+}
+
+// EffectiveAllow is the resolved set of callsigns permitted to link IN as
+// federation peers: the explicit PDN_BPQCHAT_PEER_ALLOW entries UNIONed with the
+// callsigns of every configured outbound peer (Peers/RFPeers). We already trust a
+// peer we choose to dial, so its symmetric inbound link is admitted without the
+// operator listing it twice. Entries are canonicalised (trimmed, upper-cased) and
+// de-duplicated. An empty result is a valid deny-all list (the default-deny
+// posture: with nothing configured, no inbound peer links in).
+func (c *Config) EffectiveAllow() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(s string) {
+		cs := strings.ToUpper(strings.TrimSpace(s))
+		if cs == "" {
+			return
+		}
+		if _, ok := seen[cs]; ok {
+			return
+		}
+		seen[cs] = struct{}{}
+		out = append(out, cs)
+	}
+	for _, e := range c.PeerAllow {
+		add(e)
+	}
+	for _, p := range c.Peers {
+		add(p.Call)
+	}
+	for _, p := range c.RFPeers {
+		add(p.PeerCall)
+	}
+	return out
 }
 
 // RFPeer is an outbound peer chat node reached over AX.25 via RHP. For a directly
@@ -138,7 +178,63 @@ func Load() (*Config, error) {
 	}
 	c.Peers = peers
 	c.RFPeers = rfPeers
+	allow, err := parseAllow(os.Getenv("PDN_BPQCHAT_PEER_ALLOW"))
+	if err != nil {
+		return nil, err
+	}
+	c.PeerAllow = allow
 	return c, nil
+}
+
+// parseAllow parses PDN_BPQCHAT_PEER_ALLOW — a comma- or space-separated list of
+// callsigns permitted to link IN as federation peers (design.md §4.1). Each entry
+// is canonicalised (trimmed, upper-cased); empty entries are skipped. A malformed
+// entry — one containing whitespace-internal junk or wire-illegal characters (a
+// callsign is alphanumerics with an optional "-SSID" suffix) — is a hard error, so
+// a fat-fingered allow-list fails loudly at startup rather than silently admitting
+// or denying the wrong peer. An empty/unset value yields a nil list (deny-all).
+func parseAllow(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, entry := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
+		cs := strings.ToUpper(strings.TrimSpace(entry))
+		if cs == "" {
+			continue
+		}
+		if !isValidCallsign(cs) {
+			return nil, fmt.Errorf("config: PDN_BPQCHAT_PEER_ALLOW entry %q is not a valid callsign (alphanumerics, optional -SSID)", entry)
+		}
+		out = append(out, cs)
+	}
+	return out, nil
+}
+
+// isValidCallsign reports whether cs is a plausible AX.25 callsign for the
+// allow-list: a base of letters/digits, with at most one "-SSID" suffix whose SSID
+// is 0–15. It is deliberately permissive about the base (BPQ chat callsigns vary)
+// but rejects spaces and wire-illegal punctuation that would never match a decoded
+// peer callsign (proto.go upper-cases and space-splits, so an entry with a space
+// could never match — better to reject it at load time).
+func isValidCallsign(cs string) bool {
+	base, ssid, hasSSID := strings.Cut(cs, "-")
+	if base == "" {
+		return false
+	}
+	for _, r := range base {
+		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	if hasSSID {
+		n, err := strconv.Atoi(ssid)
+		if err != nil || n < 0 || n > 15 {
+			return false
+		}
+	}
+	return true
 }
 
 // parsePeers parses PDN_BPQCHAT_PEERS — a comma-separated list of outbound peer

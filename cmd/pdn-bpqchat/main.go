@@ -33,8 +33,9 @@ func sprintfMain(format string, a ...any) string { return fmt.Sprintf(format, a.
 
 // servePeerListener accepts inbound IP peer links until ctx is cancelled. Each
 // accepted connection is handed to peer.ServeInboundIP, which runs the BPQ chat
-// node-link handshake and bridges the peer to the shared router/hub.
-func servePeerListener(ctx context.Context, addr, ourNode string, router *peer.Router, hub *chat.Hub, log *slog.Logger) {
+// node-link handshake, enforces the inbound-peer allow-list, and bridges an
+// allow-listed peer to the shared router/hub.
+func servePeerListener(ctx context.Context, addr, ourNode string, router *peer.Router, hub *chat.Hub, allow *peer.AllowList, log *slog.Logger) {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -55,7 +56,7 @@ func servePeerListener(ctx context.Context, addr, ourNode string, router *peer.R
 		}
 		go func() {
 			log.Info("inbound IP peer connection", "from", conn.RemoteAddr().String())
-			if err := peer.ServeInboundIP(ctx, conn, router, hub, ourNode,
+			if err := peer.ServeInboundIP(ctx, conn, router, hub, ourNode, allow,
 				func(f string, a ...any) { log.Info("peer", "msg", sprintfMain(f, a...)) }); err != nil {
 				log.Info("inbound IP peer ended", "from", conn.RemoteAddr().String(), "err", err)
 			}
@@ -125,6 +126,14 @@ func main() {
 	router := peer.NewRouter(hub)
 	defer router.Close()
 
+	// Inbound-peer allow-list (design.md §4.1): the single default-deny gate every
+	// inbound federation link is checked against — explicit PDN_BPQCHAT_PEER_ALLOW
+	// entries plus the callsigns of peers we dial out to (we already trust those).
+	// With nothing configured the list is empty and admits NO inbound peer.
+	allow := peer.NewAllowList(cfg.EffectiveAllow()...)
+	log.Info("inbound peer allow-list (default-deny)",
+		"allowed", allow.Entries(), "count", len(allow.Entries()))
+
 	// RHP attachment: bind the callsign; serve inbound RF users and inbound peer
 	// links; dial configured RF peers over AX.25.
 	wg.Add(1)
@@ -138,6 +147,7 @@ func main() {
 			ChatCallsign:     cfg.BoundCallsign(),
 			NodeOwnsCallsign: cfg.NodeOwnsCallsign(),
 			RFPeers:          cfg.RFPeers,
+			Allow:            allow,
 		}, hub, router, log)
 		link.Run(ctx)
 	}()
@@ -161,7 +171,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			servePeerListener(ctx, cfg.PeerListen, cfg.BoundCallsign(), router, hub, log)
+			servePeerListener(ctx, cfg.PeerListen, cfg.BoundCallsign(), router, hub, allow, log)
 		}()
 	}
 
