@@ -161,3 +161,87 @@ func TestParsePeersBad(t *testing.T) {
 		t.Fatal("entry without @host:port should error")
 	}
 }
+
+// TestParseAllow: the inbound-peer allow-list parses comma- or space-separated
+// callsigns, canonicalises them, and rejects malformed entries (design.md §4.1).
+func TestParseAllow(t *testing.T) {
+	got, err := parseAllow(" gb7ndh-3, GB7WOD-1  gb7wok-1 ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"GB7NDH-3", "GB7WOD-1", "GB7WOK-1"}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry[%d] = %q, want %q (canonical, in order)", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseAllowEmpty(t *testing.T) {
+	// Empty/unset → nil (the default-deny posture: nothing admitted).
+	if got, err := parseAllow("   "); err != nil || got != nil {
+		t.Fatalf("empty allow-list = %v, %v; want nil, nil", got, err)
+	}
+}
+
+func TestParseAllowMalformed(t *testing.T) {
+	for _, bad := range []string{
+		"GB7NDH-99",  // SSID out of range
+		"GB7NDH-",    // empty SSID
+		"GB7@NDH",    // illegal punctuation
+		"GB7NDH-3-1", // double SSID
+		"-3",         // no base
+	} {
+		if _, err := parseAllow(bad); err == nil {
+			t.Fatalf("parseAllow(%q) accepted a malformed entry", bad)
+		}
+	}
+}
+
+// TestEffectiveAllowUnionsOutboundPeers: the effective inbound allow-list folds in
+// every configured outbound peer callsign (we already trust a peer we dial) and
+// de-duplicates, so an operator never has to list a dialed peer twice.
+func TestEffectiveAllowUnionsOutboundPeers(t *testing.T) {
+	c := &Config{
+		PeerAllow: []string{"GB7WOK-1"},
+		Peers:     []Peer{{Call: "GB7NDH-3", Addr: "10.0.0.1:8010"}},
+		RFPeers:   []RFPeer{{PeerCall: "GB7WOD-1"}, {PeerCall: "GB7WOK-1"}}, // GB7WOK-1 dup
+	}
+	got := c.EffectiveAllow()
+	want := map[string]bool{"GB7WOK-1": true, "GB7NDH-3": true, "GB7WOD-1": true}
+	if len(got) != len(want) {
+		t.Fatalf("effective allow = %v, want the 3 unique callsigns %v", got, want)
+	}
+	for _, cs := range got {
+		if !want[cs] {
+			t.Fatalf("unexpected effective-allow entry %q", cs)
+		}
+		delete(want, cs)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing effective-allow entries: %v", want)
+	}
+}
+
+func TestLoadParsesAllow(t *testing.T) {
+	t.Setenv("PDN_NODE_CALLSIGN", "M0LTE")
+	t.Setenv("PDN_BPQCHAT_PEER_ALLOW", "gb7ndh-3, gb7wod-1")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.PeerAllow) != 2 || c.PeerAllow[0] != "GB7NDH-3" || c.PeerAllow[1] != "GB7WOD-1" {
+		t.Fatalf("PeerAllow = %v, want [GB7NDH-3 GB7WOD-1]", c.PeerAllow)
+	}
+}
+
+func TestLoadRejectsMalformedAllow(t *testing.T) {
+	t.Setenv("PDN_NODE_CALLSIGN", "M0LTE")
+	t.Setenv("PDN_BPQCHAT_PEER_ALLOW", "GB7NDH-99")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load with a malformed PDN_BPQCHAT_PEER_ALLOW should error")
+	}
+}

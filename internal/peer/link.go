@@ -228,7 +228,17 @@ func (l *Link) serve(ctx context.Context, br *bufio.Reader, pending *Record) err
 // dialer emits its keepalive K right after *RTL (before it waits for our OK), and
 // that record carries the originating node in field 0 (proto.go). ourNode is our
 // own chat callsign.
-func ServeInboundIP(ctx context.Context, rw io.ReadWriteCloser, router *Router, hub *chat.Hub, ourNode string, logf func(string, ...any)) error {
+//
+// allow is the inbound-peer allow-list (design.md §4.1) and is enforced at this
+// ingress: once we have learned who the caller claims to be (first.Node) and
+// BEFORE we reply OK, mutate the hub, or relay anything, a non-allow-listed peer
+// is dropped — the link is closed and its records never reach the router/hub. A
+// nil allow-list denies everything, so the default-deny posture holds even if a
+// caller wires this path up without one.
+func ServeInboundIP(ctx context.Context, rw io.ReadWriteCloser, router *Router, hub *chat.Hub, ourNode string, allow *AllowList, logf func(string, ...any)) error {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	br := bufio.NewReader(rw)
 	if _, err := io.WriteString(rw, banner()+"\r"); err != nil {
 		return err
@@ -242,6 +252,14 @@ func ServeInboundIP(ctx context.Context, rw io.ReadWriteCloser, router *Router, 
 	}
 	if first.Node == "" {
 		return fmt.Errorf("inbound IP peer: first record carried no node callsign")
+	}
+	if !allow.Allowed(first.Node) {
+		// Default-deny: an unsolicited peer not on the allow-list is refused here,
+		// at the ingress, before any OK, hub mutation, or relay. The record we read
+		// is discarded with the connection (design.md §4.1).
+		n := allow.Reject()
+		logf("inbound IP peer %s REFUSED: not in allow-list (rejected=%d)", first.Node, n)
+		return fmt.Errorf("inbound IP peer %s refused: not in allow-list", first.Node)
 	}
 	l := NewLink(rw, router, hub, Config{
 		PeerCall: first.Node, OurNode: ourNode, Outbound: false, Greeted: true, Log: logf,

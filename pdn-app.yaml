@@ -16,7 +16,7 @@
 manifest: 1
 id: bpqchat                   # must equal the package directory name
 name: BPQ Chat
-version: "0.1.1"
+version: "0.2.0"
 description: BPQ-Chat-compatible chat node — RF + web chat, peering with the BPQ Chat network. Default off.
 icon: chat
 capabilities: [packet, web]  # binds its own callsign over RHPv2; serves its own web UI
@@ -35,6 +35,10 @@ service:
                               #                            "rf:CALL" (direct AX.25), "via:…" (node-prompt connect
                               #                            script across the network). See docs/LAB.md.
                               #   PDN_BPQCHAT_PEER_LISTEN  host:port to accept inbound pdn↔pdn IP peer links.
+                              #   PDN_BPQCHAT_PEER_ALLOW   inbound-peer allow-list (design.md §4.1): comma/space
+                              #                            separated peer callsigns permitted to LINK IN to us
+                              #                            (default-deny — an unlisted peer is refused). Outbound
+                              #                            peers from PDN_BPQCHAT_PEERS are admitted automatically.
                               #   PDN_BPQCHAT_SSID         override the default chat SSID (4).
                               #   PDN_LOG_LEVEL            debug | info | warn | error (default info).
 

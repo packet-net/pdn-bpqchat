@@ -40,6 +40,12 @@ type Options struct {
 	// The node guarantees its uniqueness, so the bind must NOT probe other SSIDs.
 	NodeOwnsCallsign bool
 	RFPeers          []config.RFPeer // peer chat nodes to dial over AX.25 via RHP (optionally via a connect script)
+	// Allow is the inbound-peer allow-list (design.md §4.1). An inbound AX.25
+	// caller that promotes its session to a node link (*RTL) is admitted only if
+	// its callsign is on this list; otherwise the link is refused at the ingress
+	// (no hub state is mutated). A nil list denies every inbound peer link
+	// (default-deny). It does NOT gate inbound human users — only node links.
+	Allow *peer.AllowList
 }
 
 // Link is the resilient RHP attachment that serves inbound RF users and peers
@@ -295,6 +301,15 @@ func (l *Link) serveInbound(ctx context.Context, rw io.ReadWriteCloser, remote s
 	}
 
 	if peer.IsRTL(first) {
+		// Federation ingress: enforce the inbound-peer allow-list (design.md §4.1)
+		// BEFORE building the link — a non-allow-listed caller is dropped here, so
+		// it never reaches the router/hub and mutates no state. The AX.25 caller
+		// callsign (remote) is the link identity; default-deny when unlisted.
+		if !l.opts.Allow.Allowed(remote) {
+			n := l.opts.Allow.Reject()
+			l.log.Warn("inbound peer link REFUSED: not in allow-list", "peer", remote, "rejected", n)
+			return // rw is closed by the deferred rw.Close()
+		}
 		l.log.Info("inbound peer link", "peer", remote)
 		link := peer.NewLink(rw, l.router, l.hub, peer.Config{
 			PeerCall: remote, OurNode: l.boundCallsign(), Outbound: false, Greeted: true,

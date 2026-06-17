@@ -299,8 +299,9 @@ func TestInboundIPLink(t *testing.T) {
 	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour})
 	go la.Run(ctx)
 	// The listener learns "GB7AAA" from the dialer's first record — not from any
-	// transport-supplied callsign.
-	go func() { _ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB", nil) }()
+	// transport-supplied callsign. The dialer (GB7AAA) is allow-listed so the link
+	// is admitted (allow-list reject paths are covered by TestInboundIPLinkRejected).
+	go func() { _ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB", NewAllowList("GB7AAA"), nil) }()
 
 	// The listener must have learned the peer and received A's user.
 	waitFor(t, func() bool { _, ok := b.hub.User(akey); return ok })
@@ -315,6 +316,60 @@ func TestInboundIPLink(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// TestInboundIPLinkRejected: an inbound IP peer whose learned callsign is NOT on
+// the allow-list is refused at the ingress — ServeInboundIP returns an error, the
+// peer never enters the listener's node graph or hub, and the reject is counted
+// (design.md §4.1, default-deny). It is the IP-transport twin of
+// node.TestDemuxPeerLinkRejectedDefaultDeny.
+func TestInboundIPLinkRejected(t *testing.T) {
+	aConn, bConn := tcpPair(t)
+
+	a := newTestNode("GB7AAA") // the dialer (NOT allow-listed at the listener)
+	b := newTestNode("GB7BBB") // the listener
+	defer a.router.Close()
+	defer b.router.Close()
+
+	akey := chat.UserKey{Call: "G8PZT", Node: "GB7AAA"}
+	a.hub.Join(chat.User{Call: akey.Call, Origin: chat.Origin{Node: "GB7AAA", Local: true}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	la := NewLink(aConn, a.router, a.hub, Config{PeerCall: "GB7BBB", OurNode: "GB7AAA", Outbound: true, Keepalive: time.Hour})
+	go la.Run(ctx)
+
+	// Allow-list permits only GB7CCC, so the dialing GB7AAA is refused.
+	allow := NewAllowList("GB7CCC")
+	errc := make(chan error, 1)
+	go func() { errc <- ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB", allow, nil) }()
+
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("ServeInboundIP admitted a non-allow-listed peer (want refusal error)")
+		}
+		if !strings.Contains(err.Error(), "allow-list") {
+			t.Fatalf("refusal error = %v, want it to mention the allow-list", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeInboundIP did not refuse the non-allow-listed peer in time")
+	}
+
+	// No state must have been mutated: the dialer's user must NOT appear, and the
+	// reject must be observable.
+	if _, ok := b.hub.User(akey); ok {
+		t.Fatal("refused peer's user reached the hub — state mutated on a rejected link")
+	}
+	for _, n := range b.hub.Nodes() {
+		if n.Call == "GB7AAA" {
+			t.Fatal("refused peer entered the listener's node graph")
+		}
+	}
+	if got := allow.Rejected(); got != 1 {
+		t.Fatalf("rejected count = %d, want 1", got)
+	}
 }
 
 // TestConnectScriptDial proves an outbound connect script: the dialer opens to a
@@ -348,7 +403,7 @@ func TestConnectScriptDial(t *testing.T) {
 			return
 		}
 		_, _ = io.WriteString(bConn, "Connected to GB7BBB-4\r")
-		_ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB-4", nil)
+		_ = ServeInboundIP(ctx, bConn, b.router, b.hub, "GB7BBB-4", NewAllowList("GB7AAA"), nil)
 	}()
 
 	// Dialer: PeerCall is the chat callsign GB7BBB-4; the script expects the node

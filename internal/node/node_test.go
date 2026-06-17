@@ -47,12 +47,14 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 }
 
-func newLink(t *testing.T) (*Link, *chat.Hub) {
+// newLink builds a node Link with an inbound-peer allow-list seeded from allowed
+// (empty = the default-deny posture: no inbound peer links in).
+func newLink(t *testing.T, allowed ...string) (*Link, *chat.Hub) {
 	t.Helper()
 	hub := chat.NewHub("M0LTE-4", chat.NewMemStore(), nil)
 	router := peer.NewRouter(hub)
 	t.Cleanup(router.Close)
-	l := New(Options{ChatCallsign: "M0LTE-4"}, hub, router, discard())
+	l := New(Options{ChatCallsign: "M0LTE-4", Allow: peer.NewAllowList(allowed...)}, hub, router, discard())
 	return l, hub
 }
 
@@ -111,9 +113,10 @@ func TestDemuxUserSession(t *testing.T) {
 	waitFor(t, func() bool { _, ok := hub.User(chat.UserKey{Call: "G8PZT", Node: "M0LTE-4"}); return ok })
 }
 
-// TestDemuxPeerLink: a caller whose first line is *RTL becomes a peer link.
+// TestDemuxPeerLink: an ALLOW-LISTED caller whose first line is *RTL becomes a
+// peer link (the accept end-to-end path of design.md §4.1).
 func TestDemuxPeerLink(t *testing.T) {
-	l, hub := newLink(t)
+	l, hub := newLink(t, "GB7XYZ") // GB7XYZ is allow-listed
 	server, client := tcpPair(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -141,5 +144,41 @@ func TestDemuxPeerLink(t *testing.T) {
 	n, _ := br.Read(got)
 	if !strings.Contains(string(got[:n]), "OK") {
 		t.Fatalf("expected OK after *RTL, got %q", got[:n])
+	}
+}
+
+// TestDemuxPeerLinkRejectedDefaultDeny: a caller whose first line is *RTL but
+// whose callsign is NOT on the allow-list is refused at the federation ingress —
+// it never enters the node graph, the link is dropped, and the rejection is
+// counted (design.md §4.1, default-deny).
+func TestDemuxPeerLinkRejectedDefaultDeny(t *testing.T) {
+	l, hub := newLink(t) // EMPTY allow-list → default-deny
+	server, client := tcpPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { l.serveInbound(ctx, server, "GB7BAD"); close(done) }()
+
+	br := bufio.NewReader(client)
+	if line, _ := br.ReadString('\r'); !strings.Contains(line, peer.Banner()) {
+		t.Fatalf("expected banner, got %q", line)
+	}
+	// Present as a node link from a non-allow-listed callsign.
+	_, _ = client.Write([]byte("*RTL\r"))
+
+	// serveInbound must return (the connection is dropped) without ever adding the
+	// caller to the node graph — no OK, no state mutation.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveInbound did not drop the refused peer link")
+	}
+	for _, n := range hub.Nodes() {
+		if n.Call == "GB7BAD" {
+			t.Fatalf("refused peer GB7BAD entered the node graph — state mutated on a rejected link")
+		}
+	}
+	if got := l.opts.Allow.Rejected(); got != 1 {
+		t.Fatalf("rejected count = %d, want 1 (the reject must be observable)", got)
 	}
 }
