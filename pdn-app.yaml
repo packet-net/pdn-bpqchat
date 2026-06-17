@@ -43,7 +43,12 @@ service:
                               #   PDN_LOG_LEVEL            debug | info | warn | error (default info).
 
 # pdn reverse-proxies /apps/bpqchat/ to the loopback upstream and shows a launcher tile.
+# mode: slot — the app renders inside the pdn shell's content slot (chrome-less); the
+# SPA detects the ?pdn_embed=1 query the shell appends and drops its own outer header
+# so there is no double chrome. The app still serves a full standalone page when opened
+# directly (no pdn_embed), so it degrades gracefully.
 ui:
   upstream: http://127.0.0.1:18093   # MUST match the daemon's web port (config.DefaultWebPort)
+  mode: slot                         # render chrome-less inside the pdn content slot
   name: BPQ Chat
   icon: chat
