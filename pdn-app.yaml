@@ -7,22 +7,29 @@
 #
 # DEFAULT-OFF: this is a discovered-but-disabled app (HANDOVER.md §1) — the owner enables it.
 #
-# CALLSIGN: derived automatically from the node — <PDN_NODE_CALLSIGN>-<ssid> (default SSID 4); do NOT
-# set a callsign here. PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT / PDN_APP_STATE come from the
-# supervisor environment. The web port below MUST match the daemon's web bind (config DefaultWebPort).
+# CALLSIGN: node-owned. When the node injects PDN_APP_CALLSIGN the app binds exactly that on air and
+# trusts the node's uniqueness guarantee (no SSID probe). Without it (an older node / standalone) the
+# callsign falls back to a derivation from the node — <PDN_NODE_CALLSIGN>-<ssid> (default SSID 4) — with
+# an SSID probe on a bind clash. Do NOT set a callsign here. PDN_APP_CALLSIGN / PDN_NODE_CALLSIGN /
+# PDN_RHP_HOST / PDN_RHP_PORT / PDN_APP_STATE come from the supervisor environment. The web port below
+# MUST match the daemon's web bind (config DefaultWebPort).
 manifest: 1
 id: bpqchat                   # must equal the package directory name
 name: BPQ Chat
-version: "0.0.1"
+version: "0.1.1"
 description: BPQ-Chat-compatible chat node — RF + web chat, peering with the BPQ Chat network. Default off.
 icon: chat
 capabilities: [packet, web]  # binds its own callsign over RHPv2; serves its own web UI
+
+# Packet plane: the node command that connects a user to this app's bound callsign.
+packet:
+  command: CHAT
 
 # The Go daemon pdn supervises while the app is enabled. Users connect to its bound callsign over RF,
 # and the node owner uses the web tile; there is no console `session:` verb.
 service:
   command: ./pdn-bpqchat      # relative — resolves to the published static binary in this package dir
-  environment: {}             # PDN_APP_STATE / PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT from the supervisor.
+  environment: {}             # PDN_APP_CALLSIGN / PDN_APP_STATE / PDN_NODE_CALLSIGN / PDN_RHP_HOST / PDN_RHP_PORT from the supervisor.
                               # Optional owner knobs (set via the node's apps: entry environment override):
                               #   PDN_BPQCHAT_PEERS        outbound peers, comma-separated: "CALL@host:port" (IP),
                               #                            "rf:CALL" (direct AX.25), "via:…" (node-prompt connect

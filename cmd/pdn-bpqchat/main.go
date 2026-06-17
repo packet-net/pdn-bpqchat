@@ -88,7 +88,7 @@ func main() {
 	}
 	log.Info("pdn-bpqchat starting",
 		"version", version,
-		"chatCallsign", cfg.ChatCallsign(),
+		"chatCallsign", cfg.BoundCallsign(),
 		"rhp", cfg.RHPHost, "rhpPort", cfg.RHPPort,
 		"webPort", cfg.WebPort, "state", cfg.StateDir)
 
@@ -104,7 +104,7 @@ func main() {
 	}
 	defer store.Close()
 
-	hub := chat.NewHub(cfg.ChatCallsign(), store, nil)
+	hub := chat.NewHub(cfg.BoundCallsign(), store, nil)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -115,7 +115,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := web.New(cfg.WebPort, cfg.ChatCallsign(), hub, log).Run(ctx); err != nil {
+		if err := web.New(cfg.WebPort, cfg.BoundCallsign(), hub, log).Run(ctx); err != nil {
 			log.Error("web tile stopped", "err", err)
 			stop()
 		}
@@ -131,12 +131,13 @@ func main() {
 	go func() {
 		defer wg.Done()
 		link := node.New(node.Options{
-			Host:         cfg.RHPHost,
-			Port:         cfg.RHPPort,
-			User:         cfg.RHPUser,
-			Pass:         cfg.RHPPass,
-			ChatCallsign: cfg.ChatCallsign(),
-			RFPeers:      cfg.RFPeers,
+			Host:             cfg.RHPHost,
+			Port:             cfg.RHPPort,
+			User:             cfg.RHPUser,
+			Pass:             cfg.RHPPass,
+			ChatCallsign:     cfg.BoundCallsign(),
+			NodeOwnsCallsign: cfg.NodeOwnsCallsign(),
+			RFPeers:          cfg.RFPeers,
 		}, hub, router, log)
 		link.Run(ctx)
 	}()
@@ -148,7 +149,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			log.Info("starting peer link", "peer", p.Call, "addr", p.Addr)
-			peer.DialAndServe(ctx, p.Addr, p.Call, cfg.ChatCallsign(), router, hub,
+			peer.DialAndServe(ctx, p.Addr, p.Call, cfg.BoundCallsign(), router, hub,
 				func(f string, a ...any) { log.Info("peer", "msg", sprintfMain(f, a...)) })
 		}()
 	}
@@ -160,7 +161,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			servePeerListener(ctx, cfg.PeerListen, cfg.ChatCallsign(), router, hub, log)
+			servePeerListener(ctx, cfg.PeerListen, cfg.BoundCallsign(), router, hub, log)
 		}()
 	}
 

@@ -13,6 +13,87 @@ func TestChatCallsignDerivation(t *testing.T) {
 	}
 }
 
+func TestBoundCallsignPrefersAppCallsign(t *testing.T) {
+	// PDN_APP_CALLSIGN set → bind it verbatim, skipping the <node>-<ssid> derive.
+	c := &Config{AppCallsign: "GB7CHT-7", NodeCallsign: "M0LTE", SSID: 4}
+	if got := c.BoundCallsign(); got != "GB7CHT-7" {
+		t.Fatalf("BoundCallsign with AppCallsign = %q, want GB7CHT-7", got)
+	}
+	if !c.NodeOwnsCallsign() {
+		t.Fatal("NodeOwnsCallsign = false with AppCallsign set, want true (no SSID probe)")
+	}
+}
+
+func TestBoundCallsignFallsBackToDerivation(t *testing.T) {
+	// PDN_APP_CALLSIGN absent → keep the derived <node>-<ssid> behaviour.
+	c := &Config{NodeCallsign: "M0LTE", SSID: 4}
+	if got := c.BoundCallsign(); got != "M0LTE-4" {
+		t.Fatalf("BoundCallsign without AppCallsign = %q, want M0LTE-4", got)
+	}
+	if c.NodeOwnsCallsign() {
+		t.Fatal("NodeOwnsCallsign = true with AppCallsign empty, want false (probe allowed)")
+	}
+}
+
+func TestLoadPrefersAppCallsign(t *testing.T) {
+	t.Setenv("PDN_NODE_CALLSIGN", "M0LTE")
+	t.Setenv("PDN_APP_CALLSIGN", " gb7cht-7 ") // trimmed + upper-cased
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AppCallsign != "GB7CHT-7" {
+		t.Fatalf("AppCallsign = %q, want GB7CHT-7 (trimmed/upper)", c.AppCallsign)
+	}
+	if got := c.BoundCallsign(); got != "GB7CHT-7" {
+		t.Fatalf("BoundCallsign = %q, want GB7CHT-7", got)
+	}
+	if !c.NodeOwnsCallsign() {
+		t.Fatal("NodeOwnsCallsign = false, want true when PDN_APP_CALLSIGN is set")
+	}
+}
+
+func TestLoadFallsBackWithoutAppCallsign(t *testing.T) {
+	t.Setenv("PDN_NODE_CALLSIGN", "M0LTE")
+	t.Setenv("PDN_APP_CALLSIGN", "") // explicitly empty → fallback
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AppCallsign != "" {
+		t.Fatalf("AppCallsign = %q, want empty", c.AppCallsign)
+	}
+	if got := c.BoundCallsign(); got != "M0LTE-4" {
+		t.Fatalf("BoundCallsign = %q, want derived M0LTE-4", got)
+	}
+	if c.NodeOwnsCallsign() {
+		t.Fatal("NodeOwnsCallsign = true, want false when PDN_APP_CALLSIGN is absent")
+	}
+}
+
+func TestLoadAppCallsignWithoutNodeCallsign(t *testing.T) {
+	// A node that reserves a callsign need not supply PDN_NODE_CALLSIGN: with a
+	// node-owned callsign there is nothing to derive, so Load must not error.
+	t.Setenv("PDN_NODE_CALLSIGN", "")
+	t.Setenv("PDN_APP_CALLSIGN", "GB7CHT-7")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load with PDN_APP_CALLSIGN and no node callsign errored: %v", err)
+	}
+	if got := c.BoundCallsign(); got != "GB7CHT-7" {
+		t.Fatalf("BoundCallsign = %q, want GB7CHT-7", got)
+	}
+}
+
+func TestLoadRequiresNodeCallsignWhenDeriving(t *testing.T) {
+	// No PDN_APP_CALLSIGN and no PDN_NODE_CALLSIGN → nothing to bind, must error.
+	t.Setenv("PDN_NODE_CALLSIGN", "")
+	t.Setenv("PDN_APP_CALLSIGN", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load with neither callsign should error")
+	}
+}
+
 func TestParsePeers(t *testing.T) {
 	peers, rf, err := parsePeers(" GB7CHT@127.0.0.1:8010 , gb7rdg@10.0.0.2:8010 , rf:gb7xyz-1 ")
 	if err != nil {

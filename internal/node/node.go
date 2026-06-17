@@ -9,6 +9,7 @@ package node
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,12 +28,18 @@ func sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) 
 
 // Options configures the RHP attachment.
 type Options struct {
-	Host         string
-	Port         int
-	User         string
-	Pass         string
+	Host string
+	Port int
+	User string
+	Pass string
+	// ChatCallsign is the callsign to bind on air. When NodeOwnsCallsign is true
+	// it is the node-reserved PDN_APP_CALLSIGN, bound verbatim; otherwise it is the
+	// derived <node>-<ssid>, and a bind refusal walks the SSID to find a free slot.
 	ChatCallsign string
-	RFPeers      []config.RFPeer // peer chat nodes to dial over AX.25 via RHP (optionally via a connect script)
+	// NodeOwnsCallsign is set when the node assigned ChatCallsign (PDN_APP_CALLSIGN).
+	// The node guarantees its uniqueness, so the bind must NOT probe other SSIDs.
+	NodeOwnsCallsign bool
+	RFPeers          []config.RFPeer // peer chat nodes to dial over AX.25 via RHP (optionally via a connect script)
 }
 
 // Link is the resilient RHP attachment that serves inbound RF users and peers
@@ -46,6 +53,7 @@ type Link struct {
 	mu      sync.Mutex
 	client  *rhp.Client
 	ctx     context.Context // the current attachment's context (for spawned children)
+	bound   string          // the callsign actually bound on air (== ChatCallsign, or a probed SSID)
 	streams map[int]*rhpStream
 	// pendingRecv / pendingClosed buffer pushes that arrive for a handle BEFORE its
 	// stream is registered. An outbound open's first recv can race ahead of stream
@@ -132,13 +140,17 @@ func (l *Link) attachOnce(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := client.Bind(ctx, handle, l.opts.ChatCallsign, ""); err != nil {
+	bound, err := l.bindCallsign(ctx, client, handle)
+	if err != nil {
 		return err
 	}
 	if err := client.Listen(ctx, handle); err != nil {
 		return err
 	}
-	l.log.Info("chat node bound and listening", "callsign", l.opts.ChatCallsign)
+	l.mu.Lock()
+	l.bound = bound
+	l.mu.Unlock()
+	l.log.Info("chat node bound and listening", "callsign", bound)
 
 	// Dial RF peers over AX.25 while this attachment is up.
 	for _, p := range l.opts.RFPeers {
@@ -151,6 +163,76 @@ func (l *Link) attachOnce(parent context.Context) error {
 	case <-client.Done():
 		return client.Err()
 	}
+}
+
+// bindCallsign binds the on-air callsign and returns the one actually bound.
+//
+// When the node reserved the callsign (NodeOwnsCallsign — PDN_APP_CALLSIGN) it is
+// bound verbatim: the node is the callsign authority and guarantees uniqueness, so
+// a bind refusal is a hard error, NOT a cue to probe other SSIDs.
+//
+// Otherwise the callsign is the derived <node>-<ssid>; if that SSID is already
+// claimed (IsCallsignInUse), walk the remaining SSIDs (the configured one first,
+// then 0..15) to find a free slot — the standalone / older-node fallback.
+func (l *Link) bindCallsign(ctx context.Context, client *rhp.Client, handle int) (string, error) {
+	if l.opts.NodeOwnsCallsign {
+		if err := client.Bind(ctx, handle, l.opts.ChatCallsign, ""); err != nil {
+			return "", fmt.Errorf("bind node-reserved callsign %q: %w", l.opts.ChatCallsign, err)
+		}
+		return l.opts.ChatCallsign, nil
+	}
+	var lastErr error
+	for _, cs := range probeCandidates(l.opts.ChatCallsign) {
+		err := client.Bind(ctx, handle, cs, "")
+		if err == nil {
+			if cs != l.opts.ChatCallsign {
+				l.log.Warn("configured chat callsign in use; bound a free SSID instead",
+					"configured", l.opts.ChatCallsign, "bound", cs)
+			}
+			return cs, nil
+		}
+		var se *rhp.ServerError
+		if errors.As(err, &se) && rhp.IsCallsignInUse(se.Code) {
+			l.log.Info("chat callsign in use; probing next SSID", "callsign", cs)
+			lastErr = err
+			continue
+		}
+		return "", err // a non-in-use bind error is not recoverable by probing
+	}
+	return "", fmt.Errorf("no free SSID for chat callsign base %q: %w", l.opts.ChatCallsign, lastErr)
+}
+
+// probeCandidates is the SSID probe order for a derived callsign: the configured
+// callsign first, then every SSID 0..15 of its base (skipping the one already
+// tried). The base is the configured callsign minus any SSID suffix.
+func probeCandidates(configured string) []string {
+	base := configured
+	if i := strings.IndexByte(configured, '-'); i >= 0 {
+		base = configured[:i]
+	}
+	out := []string{configured}
+	for ssid := 0; ssid <= 15; ssid++ {
+		cs := base
+		if ssid > 0 {
+			cs = fmt.Sprintf("%s-%d", base, ssid)
+		}
+		if cs != configured {
+			out = append(out, cs)
+		}
+	}
+	return out
+}
+
+// boundCallsign is the callsign currently bound on air — the identity the node
+// presents to peers and uses as the local end of outbound opens. Falls back to
+// the configured callsign before the first successful bind.
+func (l *Link) boundCallsign() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.bound != "" {
+		return l.bound
+	}
+	return l.opts.ChatCallsign
 }
 
 // --- rhp.Handler ---
@@ -215,7 +297,7 @@ func (l *Link) serveInbound(ctx context.Context, rw io.ReadWriteCloser, remote s
 	if peer.IsRTL(first) {
 		l.log.Info("inbound peer link", "peer", remote)
 		link := peer.NewLink(rw, l.router, l.hub, peer.Config{
-			PeerCall: remote, OurNode: l.opts.ChatCallsign, Outbound: false, Greeted: true,
+			PeerCall: remote, OurNode: l.boundCallsign(), Outbound: false, Greeted: true,
 			Log: l.slogf(),
 		})
 		_ = link.RunWithReader(ctx, br)
@@ -264,7 +346,7 @@ func (l *Link) dialRFPeer(ctx context.Context, client *rhp.Client, p config.RFPe
 func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, p config.RFPeer) error {
 	// Open to the first hop: the peer itself for a direct dial, or the node we
 	// walk a connect script through (p.OpenTo) for a multi-hop peer.
-	handle, err := client.Open(ctx, l.opts.ChatCallsign, p.OpenTo, p.OpenPort)
+	handle, err := client.Open(ctx, l.boundCallsign(), p.OpenTo, p.OpenPort)
 	if err != nil {
 		return err
 	}
@@ -278,7 +360,7 @@ func (l *Link) dialRFPeerOnce(ctx context.Context, client *rhp.Client, p config.
 	}()
 
 	link := peer.NewLink(stream, l.router, l.hub, peer.Config{
-		PeerCall: p.PeerCall, OurNode: l.opts.ChatCallsign, Outbound: true, Log: l.slogf(),
+		PeerCall: p.PeerCall, OurNode: l.boundCallsign(), Outbound: true, Log: l.slogf(),
 	})
 	if len(p.Script) > 0 {
 		l.log.Info("dialled RF node; walking connect script to peer", "open", p.OpenTo, "peer", p.PeerCall, "steps", len(p.Script))

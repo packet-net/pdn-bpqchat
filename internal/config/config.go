@@ -25,8 +25,14 @@ const (
 
 // Config is the resolved runtime configuration.
 type Config struct {
+	// AppCallsign, if set, is the exact callsign the node has reserved for this
+	// app on air (PDN_APP_CALLSIGN). The node host is the callsign authority: when
+	// it injects this it guarantees uniqueness, so the app binds it verbatim and
+	// skips the <node>-<ssid> derivation and the SSID probe-walk. Empty means an
+	// older node (or standalone run): fall back to ChatCallsign() + probe.
+	AppCallsign string
 	// NodeCallsign is the node's own callsign (PDN_NODE_CALLSIGN). The chat
-	// node's on-air callsign is derived from it.
+	// node's on-air callsign is derived from it when AppCallsign is unset.
 	NodeCallsign string
 	// SSID is the SSID appended to the node callsign to form the chat callsign.
 	SSID int
@@ -81,11 +87,28 @@ func (c *Config) ChatCallsign() string {
 	return fmt.Sprintf("%s-%d", c.NodeCallsign, c.SSID)
 }
 
+// BoundCallsign is the callsign the app actually binds on air. When the node has
+// reserved one (AppCallsign, from PDN_APP_CALLSIGN) it is used verbatim — the
+// node guarantees uniqueness, so we neither derive nor probe. Otherwise it falls
+// back to the derived ChatCallsign() (an older node or a standalone run).
+func (c *Config) BoundCallsign() string {
+	if c.AppCallsign != "" {
+		return c.AppCallsign
+	}
+	return c.ChatCallsign()
+}
+
+// NodeOwnsCallsign reports whether the node assigned the bound callsign
+// (PDN_APP_CALLSIGN). When true the callsign is guaranteed unique by the node, so
+// the bind path must NOT walk SSIDs on a bind refusal.
+func (c *Config) NodeOwnsCallsign() bool { return c.AppCallsign != "" }
+
 // Load resolves configuration from the supervisor environment, applying
 // documented defaults. It does not read chat.yaml yet (W2 adds the persistent
 // store); the W0 daemon needs only the RHP endpoint, callsign, and web port.
 func Load() (*Config, error) {
 	c := &Config{
+		AppCallsign:  strings.ToUpper(strings.TrimSpace(os.Getenv("PDN_APP_CALLSIGN"))),
 		NodeCallsign: strings.TrimSpace(os.Getenv("PDN_NODE_CALLSIGN")),
 		SSID:         DefaultSSID,
 		RHPHost:      envOr("PDN_RHP_HOST", DefaultRHPHost),
@@ -96,8 +119,11 @@ func Load() (*Config, error) {
 		WebPort:      envIntOr("PDN_WEB_PORT", DefaultWebPort),
 		PeerListen:   strings.TrimSpace(os.Getenv("PDN_BPQCHAT_PEER_LISTEN")),
 	}
-	if c.NodeCallsign == "" {
-		return nil, fmt.Errorf("config: PDN_NODE_CALLSIGN is not set (the supervisor must provide the node callsign)")
+	// The node callsign is required only when we must DERIVE the bound callsign.
+	// If the node reserved one (PDN_APP_CALLSIGN) we bind it verbatim and need no
+	// derivation, so a missing node callsign is fine.
+	if c.AppCallsign == "" && c.NodeCallsign == "" {
+		return nil, fmt.Errorf("config: PDN_NODE_CALLSIGN is not set (the supervisor must provide the node callsign, or set PDN_APP_CALLSIGN)")
 	}
 	if v := os.Getenv("PDN_BPQCHAT_SSID"); v != "" {
 		ssid, err := strconv.Atoi(v)

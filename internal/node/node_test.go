@@ -56,6 +56,42 @@ func newLink(t *testing.T) (*Link, *chat.Hub) {
 	return l, hub
 }
 
+// TestProbeCandidates: the SSID probe order is the configured callsign first,
+// then base SSIDs 0..15 with the already-tried one skipped (the fallback path).
+func TestProbeCandidates(t *testing.T) {
+	got := probeCandidates("M0LTE-4")
+	if got[0] != "M0LTE-4" {
+		t.Fatalf("first candidate = %q, want the configured M0LTE-4", got[0])
+	}
+	// 16 = configured + SSID 0..15 (16 values) minus the one (SSID 4) already tried.
+	if len(got) != 16 {
+		t.Fatalf("candidate count = %d, want 16", len(got))
+	}
+	for _, cs := range got[1:] {
+		if cs == "M0LTE-4" {
+			t.Fatalf("configured callsign repeated in probe tail: %v", got)
+		}
+	}
+	if got[1] != "M0LTE" { // SSID 0 → bare base
+		t.Fatalf("second candidate = %q, want bare base M0LTE", got[1])
+	}
+}
+
+// TestBoundCallsignFallsBackToConfigured: before a successful bind, the on-air
+// identity is the configured callsign (node-owned or derived).
+func TestBoundCallsignAccessor(t *testing.T) {
+	l, _ := newLink(t)
+	if got := l.boundCallsign(); got != "M0LTE-4" {
+		t.Fatalf("boundCallsign before bind = %q, want configured M0LTE-4", got)
+	}
+	l.mu.Lock()
+	l.bound = "GB7CHT-7"
+	l.mu.Unlock()
+	if got := l.boundCallsign(); got != "GB7CHT-7" {
+		t.Fatalf("boundCallsign after bind = %q, want GB7CHT-7", got)
+	}
+}
+
 // TestDemuxUserSession: a caller who does NOT send *RTL becomes a chat user.
 func TestDemuxUserSession(t *testing.T) {
 	l, hub := newLink(t)
