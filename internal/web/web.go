@@ -187,6 +187,8 @@ func New(port int, callsign string, hub *chat.Hub, claims ClaimStore, log *slog.
 	mux.HandleFunc("/topic", s.handleTopic)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/history", s.handleHistory)
+	mux.HandleFunc("/dms", s.handleDMs) // DM thread backfill for the viewer (S6)
+	mux.HandleFunc("/dm", s.handleDM)   // compose a DM — /S CALL text under the hood (S6)
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/claim", s.handleClaim)
 	mux.HandleFunc("/peers", s.handlePeers)            // admin: federation status panel (S5)

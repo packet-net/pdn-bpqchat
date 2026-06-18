@@ -16,7 +16,7 @@
 manifest: 1
 id: bpqchat                   # must equal the package directory name
 name: BPQ Chat
-version: "0.2.0"
+version: "0.2.1"
 description: BPQ-Chat-compatible chat node — RF + web chat, peering with the BPQ Chat network. Default off.
 icon: chat
 capabilities: [packet, web]  # binds its own callsign over RHPv2; serves its own web UI

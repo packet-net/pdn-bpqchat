@@ -375,6 +375,13 @@ func (h *Hub) History(ctx context.Context, topic string, since time.Time, limit 
 	return h.store.History(ctx, topic, since, limit)
 }
 
+// PrivateHistory returns up to limit private (KindPrivate) messages involving
+// call — sent by or addressed to it — at or after since, oldest first. It is the
+// durable backfill for the web DM pane (S6).
+func (h *Hub) PrivateHistory(ctx context.Context, call string, since time.Time, limit int) ([]Message, error) {
+	return h.store.PrivateHistory(ctx, call, since, limit)
+}
+
 // --- queries (snapshots; never expose internal pointers) ---
 
 // User returns a snapshot of a present user, or false if absent.

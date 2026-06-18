@@ -22,6 +22,13 @@ type Store interface {
 	// first. A zero since means "from the beginning".
 	History(ctx context.Context, topic string, since time.Time, limit int) ([]Message, error)
 
+	// PrivateHistory returns up to limit KindPrivate messages that involve call
+	// — sent BY it or addressed TO it — at or after since, oldest first. It is the
+	// durable backfill for the web DM pane (S6): a returning viewer sees the
+	// persisted threads with each correspondent, not just live DMs. Matching is
+	// case-insensitive on the callsign (callsigns are case-folded identities).
+	PrivateHistory(ctx context.Context, call string, since time.Time, limit int) ([]Message, error)
+
 	// GetConfig / SetConfig are a small string KV for app config (e.g. the
 	// resolved default topic, peer list state) that must survive a restart.
 	GetConfig(ctx context.Context, key string) (string, bool, error)
@@ -65,6 +72,29 @@ func (s *MemStore) History(_ context.Context, topic string, since time.Time, lim
 	var out []Message
 	for _, m := range s.msgs {
 		if m.Kind != KindTopic || normTopicKey(m.Topic) != key {
+			continue
+		}
+		if !since.IsZero() && m.Time.Before(since) {
+			continue
+		}
+		out = append(out, m)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+func (s *MemStore) PrivateHistory(_ context.Context, call string, since time.Time, limit int) ([]Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := normCall(call)
+	var out []Message
+	for _, m := range s.msgs {
+		if m.Kind != KindPrivate {
+			continue
+		}
+		if normCall(m.ToCall) != want && normCall(m.FromCall) != want {
 			continue
 		}
 		if !since.IsZero() && m.Time.Before(since) {

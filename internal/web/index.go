@@ -82,6 +82,22 @@ var indexHTML = []byte(`<!doctype html>
     border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
   nav.channels form.newchan button { padding: .35rem .55rem; }
 
+  /* Direct-messages section in the rail (S6). A correspondent button mirrors a
+     channel button; an unread badge marks threads with new DMs while you're
+     looking elsewhere. The hash glyph is swapped for a person glyph. */
+  nav.channels button.dm .glyph { color: var(--muted); margin-right: .25rem; }
+  nav.channels button.dm.active { border-left-color: var(--priv); }
+  nav.channels button.dm .badge {
+    float: right; background: var(--priv); color: #fff; border-radius: 999px;
+    font-size: .7rem; line-height: 1; padding: .15rem .4rem; margin-left: .3rem;
+  }
+  nav.channels form.newdm { display: flex; gap: .3rem; padding: .35rem .6rem .5rem; }
+  nav.channels form.newdm input { flex: 1; min-width: 0; padding: .35rem .45rem; font: inherit;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  nav.channels form.newdm button { padding: .35rem .55rem; }
+  #log .line.dm.mine .from { color: var(--me); }
+  #log .line.dm .from { color: var(--priv); font-weight: 600; }
+
   /* Conversation column */
   section.convo { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .convohead {
@@ -284,6 +300,12 @@ var indexHTML = []byte(`<!doctype html>
       <input id="newchaninput" autocomplete="off" placeholder="new channel">
       <button title="Join channel">+</button>
     </form>
+    <h2>Direct messages</h2>
+    <div class="list" id="dmlist"></div>
+    <form class="newdm" id="newdm">
+      <input id="newdminput" autocomplete="off" autocapitalize="characters" placeholder="DM a callsign">
+      <button title="Open DM thread">+</button>
+    </form>
   </nav>
   <section class="convo">
     <div class="convohead">
@@ -323,6 +345,15 @@ let me = '';
 let topic = 'General';
 const channels = new Set(['General']);
 
+// DM state (S6). dms maps an UPPER-CASED correspondent callsign to its thread:
+// an ordered list of {from,to,text,time,mine} plus an unread counter shown as a
+// rail badge while you're viewing something else. dmWith is the correspondent of
+// the open DM thread, or null when a channel (topic) is in view — the single
+// toggle that decides where the composer routes (/dm vs /send) and what #log shows.
+const dms = new Map();
+let dmWith = null;
+const dmlistEl = document.getElementById('dmlist');
+
 function esc(s){ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function pad(n){ return n < 10 ? '0'+n : ''+n; }
 function hhmm(t){ if(!t) return ''; const d = new Date(t); return pad(d.getHours())+':'+pad(d.getMinutes()); }
@@ -345,7 +376,7 @@ function renderEvent(e){
   if (e.type === 'msg')
     add(ts(e.time)+'<span class="from">'+esc(e.from)+(e.node?'<span class="node"> @'+esc(e.node)+'</span>':'')+':</span> '+esc(e.text), mine?'me':'');
   else if (e.type === 'private')
-    add(ts(e.time)+'<span class="from">*'+esc(e.from||e.to)+'*:</span> '+esc(e.text), 'priv');
+    handleDM(e); // route DMs into the DM pane (S6), not the channel timeline
   else if (e.type === 'join')
     add('*** '+esc(e.from)+(e.node?' @'+esc(e.node):'')+' joined '+esc(e.topic||''), 'sys');
   else if (e.type === 'leave')
@@ -368,11 +399,85 @@ function renderChannels(){
   chanlistEl.innerHTML = '';
   Array.from(channels).sort((a,b)=>a.localeCompare(b)).forEach(name => {
     const b = document.createElement('button');
-    b.className = 'chan' + (name.toLowerCase()===topic.toLowerCase()?' active':'');
+    b.className = 'chan' + (dmWith===null && name.toLowerCase()===topic.toLowerCase()?' active':'');
     b.innerHTML = '<span class="hash">#</span>'+esc(name);
     b.onclick = () => switchTopic(name);
     chanlistEl.appendChild(b);
   });
+}
+
+// --- DMs (S6) ---
+// A correspondent's thread is the OTHER party (e.with is computed server-side from
+// the viewer's POV, so a thread is keyed the same whether sent or received). A DM
+// that arrives while you're elsewhere bumps the thread's unread badge; opening the
+// thread clears it and renders the thread into the log.
+function dmThread(call){
+  const k = call.toUpperCase();
+  let t = dms.get(k);
+  if (!t) { t = {call: k, msgs: [], unread: 0}; dms.set(k, t); }
+  return t;
+}
+
+function dmLine(m){
+  return ts(m.time)+'<span class="from">'+(m.mine?'me':esc(m.with||m.from))+':</span> '+esc(m.text);
+}
+
+// handleDM ingests one private wireEvent into its thread. If that thread is open
+// it appends live; otherwise it counts an unread. Always re-renders the DM rail so
+// a new correspondent appears and badges update.
+function handleDM(e){
+  const t = dmThread(e.with || (e.mine ? e.to : e.from));
+  const m = {with: t.call, from: e.from, to: e.to, text: e.text, time: e.time, mine: !!e.mine};
+  t.msgs.push(m);
+  if (dmWith === t.call) {
+    add(dmLine(m), 'dm' + (m.mine?' mine':''));
+  } else {
+    t.unread++;
+  }
+  renderDMs();
+}
+
+function renderDMs(){
+  dmlistEl.innerHTML = '';
+  Array.from(dms.values())
+    .sort((a,b)=>a.call.localeCompare(b.call))
+    .forEach(t => {
+      const b = document.createElement('button');
+      b.className = 'dm chan' + (dmWith===t.call?' active':'');
+      let h = '<span class="glyph">@</span>'+esc(t.call);
+      if (t.unread && dmWith!==t.call) h += '<span class="badge">'+t.unread+'</span>';
+      b.innerHTML = h;
+      b.onclick = () => openDM(t.call);
+      dmlistEl.appendChild(b);
+    });
+}
+
+// openDM switches the conversation column to a DM thread: clears the channel-active
+// state, renders the stored thread, and points the composer at /dm. We do NOT touch
+// the SSE stream — live DMs arrive on the same stream and handleDM appends them.
+function openDM(call){
+  const t = dmThread(call);
+  dmWith = t.call;
+  t.unread = 0;
+  topicEl.textContent = t.call;
+  document.querySelector('.convohead .hash').textContent = '@';
+  usercountEl.textContent = 'direct message';
+  msgEl.placeholder = 'Message '+t.call+'  (private)';
+  log.innerHTML = '';
+  t.msgs.forEach(m => add(dmLine(m), 'dm' + (m.mine?' mine':'')));
+  log.scrollTop = log.scrollHeight;
+  renderChannels();
+  renderDMs();
+  msgEl.focus();
+}
+
+// leaveDM returns the column to the current topic view (called when a channel is
+// selected). It does not lose any DM state — threads stay in the dms map.
+function leaveDM(){
+  if (dmWith === null) return;
+  dmWith = null;
+  document.querySelector('.convohead .hash').textContent = '#';
+  renderDMs();
 }
 
 function setTopic(name){
@@ -391,7 +496,10 @@ function setStatus(live, text){
 // switchTopic moves us server-side, clears the log, and backfills history. We do
 // NOT touch the SSE stream — the server re-snapshots our topic for new events.
 async function switchTopic(name){
-  if (name.toLowerCase() === topic.toLowerCase()) return;
+  const wasDM = dmWith !== null;
+  if (!wasDM && name.toLowerCase() === topic.toLowerCase()) return;
+  leaveDM();
+  usercountEl.textContent = '';
   await post('topic', {topic: name});
   setTopic(name);
   log.innerHTML = '';
@@ -407,8 +515,11 @@ function connect(){
     me = d.call; meEl.textContent = d.call;
     setTopic(d.topic || topic);
     setStatus(true, 'live');
-    // Fresh snapshot replaces the timeline so a reconnect backfills cleanly.
+    // Fresh snapshot replaces the timeline so a reconnect backfills cleanly. DM
+    // threads are rebuilt from the persisted /dms backfill (the live stream never
+    // replays old DMs); re-render whichever view is open afterwards.
     log.innerHTML = '';
+    loadDMs();
   });
   es.addEventListener('users', ev => renderUsers(JSON.parse(ev.data)));
   // Live path: render immediately, nothing blocking, to drain the stream fast.
@@ -434,13 +545,54 @@ async function loadHistory(){
   if (r.ok) (await r.json()).forEach(renderEvent);
 }
 
+// loadDMs backfills persisted DM threads on (re)connect. It rebuilds the dms map
+// from scratch (so a reconnect doesn't duplicate) and, if a DM thread is open,
+// re-renders it; otherwise it just refreshes the rail (with unread badges intact
+// at 0 — backfilled history is not "unread").
+async function loadDMs(){
+  const r = await fetch('dms');
+  if (!r.ok) return;
+  const list = await r.json();
+  dms.clear();
+  list.forEach(e => {
+    const t = dmThread(e.with || (e.mine ? e.to : e.from));
+    t.msgs.push({with: t.call, from: e.from, to: e.to, text: e.text, time: e.time, mine: !!e.mine});
+  });
+  if (dmWith !== null && dms.has(dmWith)) {
+    const t = dms.get(dmWith);
+    log.innerHTML = '';
+    t.msgs.forEach(m => add(dmLine(m), 'dm' + (m.mine?' mine':'')));
+    log.scrollTop = log.scrollHeight;
+  }
+  renderDMs();
+}
+
 document.getElementById('f').addEventListener('submit', async ev => {
   ev.preventDefault();
   const text = msgEl.value.trim(); if (!text) return; msgEl.value = '';
-  const m = text.match(/^\/[tT]\s+(.+)$/);
-  if (m) { await switchTopic(m[1].trim()); return; }
+  const t = text.match(/^\/[tT]\s+(.+)$/);
+  if (t) { await switchTopic(t[1].trim()); return; }
+  // /S CALL text — the BPQ private-message command; works from any view. It opens
+  // (or reuses) the correspondent's thread and sends through /dm.
+  const s = text.match(/^\/[sS]\s+(\S+)\s+(.+)$/);
+  if (s) { const call = s[1].toUpperCase(); openDM(call); await sendDM(call, s[2].trim()); return; }
+  // In a DM thread the composer IS a DM compose (= /S correspondent text).
+  if (dmWith !== null) { await sendDM(dmWith, text); return; }
   await post('send', {text});
 });
+
+// sendDM composes a direct message through /dm — the web compose path that drives
+// the same hub.Private the RF /S command does. A 403 is the read-only lurker gate;
+// a 400 is an offline/unknown recipient (the "/S that user is not logged in" case).
+async function sendDM(call, text){
+  const r = await fetch('dm', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({to: call, text})});
+  if (r.status === 403) {
+    alert('Your access is read-only — you cannot send messages.');
+  } else if (!r.ok) {
+    alert(call + ' is not logged in — direct messages reach connected users only.');
+  }
+}
 
 document.getElementById('newchan').addEventListener('submit', async ev => {
   ev.preventDefault();
@@ -448,6 +600,13 @@ document.getElementById('newchan').addEventListener('submit', async ev => {
   const name = inp.value.trim(); if (!name) return; inp.value = '';
   await switchTopic(name);
   msgEl.focus();
+});
+
+document.getElementById('newdm').addEventListener('submit', ev => {
+  ev.preventDefault();
+  const inp = document.getElementById('newdminput');
+  const call = inp.value.trim().toUpperCase(); if (!call) return; inp.value = '';
+  openDM(call); // opens (or creates) the thread; the composer now routes to /dm
 });
 
 // --- Settings pane (S3) ---

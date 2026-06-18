@@ -19,6 +19,8 @@ type wireEvent struct {
 	From  string `json:"from,omitempty"`  // sender callsign
 	Node  string `json:"node,omitempty"`  // sender's home node (for off-node users)
 	To    string `json:"to,omitempty"`    // private target
+	With  string `json:"with,omitempty"`  // DM correspondent from the viewer's POV (the other party)
+	Mine  bool   `json:"mine,omitempty"`  // DM the viewer sent (vs received) — for thread alignment
 	Topic string `json:"topic,omitempty"` // topic the event belongs to
 	Text  string `json:"text,omitempty"`
 	Time  int64  `json:"time,omitempty"` // unix ms
@@ -99,8 +101,12 @@ func (s *Server) filter(key chat.UserKey, ev chat.Event) (wireEvent, bool) {
 			return topicEvent(e.Message), true
 		}
 	case chat.PrivateMessage:
-		if strings.EqualFold(e.Message.ToCall, key.Call) {
-			return wireEvent{Type: "private", From: e.Message.FromCall, To: e.Message.ToCall, Text: e.Message.Text, Time: ms(e.Message.Time)}, true
+		// A DM is visible to BOTH ends: the recipient (its inbox) and the sender
+		// (so the compose visibly threads in their own DM pane, S6). Each end's
+		// correspondent is the OTHER party — privateEvent computes that from the
+		// viewer's callsign so the browser can bucket DMs by correspondent.
+		if strings.EqualFold(e.Message.ToCall, key.Call) || strings.EqualFold(e.Message.FromCall, key.Call) {
+			return privateEvent(e.Message, key.Call), true
 		}
 	case chat.UserJoined:
 		if e.User.Key() != key && strings.EqualFold(e.User.Topic, myTopic()) {
@@ -199,12 +205,85 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// handleDMs backfills the viewer's persisted DM threads (S6): every KindPrivate
+// message they sent or received, rendered from THEIR point of view (With =
+// correspondent, Mine = sent-by-me) so the browser can rebuild per-correspondent
+// threads on (re)connect — the live SSE path carries new DMs, this carries the
+// history the live stream never replays.
+func (s *Server) handleDMs(w http.ResponseWriter, r *http.Request) {
+	call, ok := s.requireViewer(w, r) // viewing your own DMs requires a claimed identity
+	if !ok {
+		return
+	}
+	out := make([]wireEvent, 0)
+	for _, m := range s.privateHistoryFor(r.Context(), call) {
+		out = append(out, privateEvent(m, call))
+	}
+	writeJSON(w, out)
+}
+
+// handleDM composes a direct message — the web compose path for a DM, which is
+// exactly the RF `/S CALL text` command under the hood (it drives the same
+// hub.Private the session's /S does). Body: {"to":"CALL","text":"…"}. A DM is a
+// write, so a read-scope lurker is refused (S3); an unknown/offline recipient is
+// a 400 (the same "that user is not logged in" outcome /S gives).
+func (s *Server) handleDM(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireWrite(w, r) {
+		return
+	}
+	call, ok := s.requireViewer(w, r)
+	if !ok {
+		return
+	}
+	// Decode the body ONCE: {to,text} are two fields, so reading each via readField
+	// would consume the body on the first read and lose the second.
+	var body struct {
+		To   string `json:"to"`
+		Text string `json:"text"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	to := strings.ToUpper(strings.TrimSpace(body.To))
+	text := strings.TrimSpace(body.Text)
+	if to == "" || text == "" {
+		http.Error(w, "to and text are required", http.StatusBadRequest)
+		return
+	}
+	key := chat.UserKey{Call: call, Node: s.hub.OurNode()}
+	if _, ok := s.hub.User(key); !ok {
+		// No live stream yet (e.g. a curl client) — make the sender present first,
+		// mirroring handleSend, so hub.Private finds them as a known user.
+		key = s.presence.enter(call)
+		defer s.presence.leave(call)
+	}
+	if _, err := s.hub.Private(r.Context(), key, to, text); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- helpers ---
 
 func (s *Server) historyFor(ctx context.Context, topic string) []chat.Message {
 	msgs, err := s.hub.History(ctx, topic, time.Time{}, 100)
 	if err != nil {
 		s.log.Warn("history query failed", "topic", topic, "err", err)
+		return nil
+	}
+	return msgs
+}
+
+func (s *Server) privateHistoryFor(ctx context.Context, call string) []chat.Message {
+	msgs, err := s.hub.PrivateHistory(ctx, call, time.Time{}, 200)
+	if err != nil {
+		s.log.Warn("private history query failed", "call", call, "err", err)
 		return nil
 	}
 	return msgs
@@ -220,6 +299,19 @@ func (s *Server) usersFor(topic string) []map[string]string {
 
 func topicEvent(m chat.Message) wireEvent {
 	return wireEvent{Type: "msg", From: m.FromCall, Topic: m.Topic, Text: m.Text, Time: ms(m.Time)}
+}
+
+// privateEvent renders a KindPrivate message for a given viewer (S6 DM pane). It
+// fills With (the correspondent — the OTHER party, so a thread is keyed the same
+// whether the viewer sent or received it) and Mine (true when the viewer is the
+// sender), so the browser can bucket and align DMs without re-deriving identity.
+func privateEvent(m chat.Message, viewer string) wireEvent {
+	mine := strings.EqualFold(m.FromCall, viewer)
+	with := m.FromCall
+	if mine {
+		with = m.ToCall
+	}
+	return wireEvent{Type: "private", From: m.FromCall, To: m.ToCall, With: with, Mine: mine, Text: m.Text, Time: ms(m.Time)}
 }
 
 func offNode(u chat.User, ourNode string) string {

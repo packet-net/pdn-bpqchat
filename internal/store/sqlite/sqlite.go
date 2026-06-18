@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_topic_ts
     ON messages (kind, topic, ts_unix_ns);
+-- DM backfill (S6): a returning viewer reads the persisted threads they sent or
+-- received. Two indexes — by recipient and by sender — so PrivateHistory's
+-- (to_call = ? OR from_call = ?) probe is cheap on the newest rows from each side.
+CREATE INDEX IF NOT EXISTS idx_messages_to_ts
+    ON messages (kind, to_call, ts_unix_ns);
+CREATE INDEX IF NOT EXISTS idx_messages_from_ts
+    ON messages (kind, from_call, ts_unix_ns);
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -170,6 +177,54 @@ func (s *Store) History(ctx context.Context, topic string, since time.Time, limi
 	rows, err := s.db.QueryContext(ctx, q, int(chat.KindTopic), topic, sinceNs, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []chat.Message
+	for rows.Next() {
+		var (
+			m    chat.Message
+			kind int
+			tsNs int64
+		)
+		if err := rows.Scan(&m.ID, &m.OriginNode, &m.FromCall, &kind, &m.Topic, &m.ToCall, &tsNs, &m.Text); err != nil {
+			return nil, fmt.Errorf("sqlite: scan: %w", err)
+		}
+		m.Kind = chat.MessageKind(kind)
+		m.Time = time.Unix(0, tsNs)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Reverse to oldest-first.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+// PrivateHistory returns up to limit private messages involving call (sent by or
+// addressed to it) at or after since, oldest first — the durable backfill for the
+// web DM pane (S6). Like History it over-fetches the newest matching rows then
+// reverses to oldest-first; the callsign match is case-insensitive.
+func (s *Store) PrivateHistory(ctx context.Context, call string, since time.Time, limit int) ([]chat.Message, error) {
+	var sinceNs int64
+	if !since.IsZero() {
+		sinceNs = since.UnixNano()
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	const q = `SELECT id, origin_node, from_call, kind, topic, to_call, ts_unix_ns, text
+	           FROM messages
+	           WHERE kind = ? AND ts_unix_ns >= ?
+	             AND (to_call = ? COLLATE NOCASE OR from_call = ? COLLATE NOCASE)
+	           ORDER BY ts_unix_ns DESC
+	           LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, q, int(chat.KindPrivate), sinceNs, call, call, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: private history: %w", err)
 	}
 	defer rows.Close()
 
