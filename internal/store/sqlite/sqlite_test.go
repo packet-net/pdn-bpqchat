@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -131,5 +132,76 @@ func TestConfigKV(t *testing.T) {
 	v, ok, err := s.GetConfig(ctx, "default_topic")
 	if err != nil || !ok || v != "DX" {
 		t.Fatalf("config get = %q ok=%v err=%v, want DX", v, ok, err)
+	}
+}
+
+// TestClaimRoundTrip: a claim is recorded, read back, and survives a re-open of
+// the same db file (the durability the design promises across a reinstall).
+func TestClaimRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claims.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	if err := s.Claim(ctx, "alice@pdn", "M0ABC", now); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if cs, ok, err := s.ClaimedCall(ctx, "alice@pdn"); err != nil || !ok || cs != "M0ABC" {
+		t.Fatalf("claimed call = %q ok=%v err=%v, want M0ABC", cs, ok, err)
+	}
+	if _, ok, _ := s.ClaimedCall(ctx, "nobody@pdn"); ok {
+		t.Fatal("unclaimed user should report not-found")
+	}
+	_ = s.Close()
+
+	// Re-open the SAME file: the claim must still be there.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if cs, ok, _ := s2.ClaimedCall(ctx, "alice@pdn"); !ok || cs != "M0ABC" {
+		t.Fatalf("claim did not survive re-open: %q ok=%v", cs, ok)
+	}
+}
+
+// TestClaimCollision: a callsign held by one user cannot be claimed by another
+// (ErrCallsignClaimed), case-insensitively; the original owner is unaffected, and
+// a user re-claiming their own callsign or changing it is fine.
+func TestClaimCollision(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	if err := s.Claim(ctx, "alice@pdn", "M0ABC", now); err != nil {
+		t.Fatal(err)
+	}
+	// Another user, same callsign → collision.
+	if err := s.Claim(ctx, "bob@pdn", "M0ABC", now); !errors.Is(err, ErrCallsignClaimed) {
+		t.Fatalf("cross-account claim err = %v, want ErrCallsignClaimed", err)
+	}
+	// Case-folded spelling collides too.
+	if err := s.Claim(ctx, "bob@pdn", "m0abc", now); !errors.Is(err, ErrCallsignClaimed) {
+		t.Fatalf("case-folded cross-account claim err = %v, want ErrCallsignClaimed", err)
+	}
+	// Bob recorded nothing; Alice still owns it.
+	if _, ok, _ := s.ClaimedCall(ctx, "bob@pdn"); ok {
+		t.Fatal("a collided claim must not be recorded")
+	}
+	if cs, _, _ := s.ClaimedCall(ctx, "alice@pdn"); cs != "M0ABC" {
+		t.Fatalf("owner lost callsign: %q", cs)
+	}
+	// Alice re-claims her own callsign: idempotent success.
+	if err := s.Claim(ctx, "alice@pdn", "M0ABC", now); err != nil {
+		t.Fatalf("self re-claim err = %v, want nil", err)
+	}
+	// Alice changes to a free callsign; the old one frees up for Bob.
+	if err := s.Claim(ctx, "alice@pdn", "M0DEF", now); err != nil {
+		t.Fatalf("change own callsign err = %v", err)
+	}
+	if err := s.Claim(ctx, "bob@pdn", "M0ABC", now); err != nil {
+		t.Fatalf("re-claim of released callsign err = %v, want nil", err)
 	}
 }

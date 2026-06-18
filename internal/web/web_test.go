@@ -7,24 +7,59 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
+	"github.com/m0lte/pdn-bpqchat/internal/store/sqlite"
 )
 
 func slogDiscard() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// newClaimStore opens a fresh on-disk SQLite store (temp dir) for the claims
+// table — the real production implementation, so claim tests exercise the actual
+// unique-index collision path and the ErrCallsignClaimed sentinel.
+func newClaimStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "claims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 func testServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
+	s, ts, _ := testServerWithClaims(t)
+	return s, ts
+}
+
+// seedClaim records a pdn-user → callsign mapping directly in the store so a test
+// viewer is already claimed (mirrors a returning user). The legacy SSE/topic
+// tests use the callsign itself as the pdn user, so seeding call→call lets them
+// keep posting under that callsign now that an unclaimed viewer must claim first.
+func seedClaim(t *testing.T, s *Server, pdnUser, callsign string) {
+	t.Helper()
+	if err := s.claims.Claim(context.Background(), pdnUser, callsign, time.Now()); err != nil {
+		t.Fatalf("seed claim %s→%s: %v", pdnUser, callsign, err)
+	}
+}
+
+// testServerWithClaims builds the server with a real SQLite claim store and hands
+// it back so claim tests can pre-seed and inspect mappings.
+func testServerWithClaims(t *testing.T) (*Server, *httptest.Server, *sqlite.Store) {
+	t.Helper()
 	hub := chat.NewHub("M0LTE-4", chat.NewMemStore(), nil)
-	s := New(0, "M0LTE-4", hub, slogDiscard())
+	claims := newClaimStore(t)
+	s := New(0, "M0LTE-4", hub, claims, slogDiscard())
 	ts := httptest.NewServer(s.srv.Handler)
 	t.Cleanup(ts.Close)
-	return s, ts
+	return s, ts, claims
 }
 
 // gwPost POSTs body to base+path as a gateway-stamped request, optionally as the
@@ -118,6 +153,7 @@ func drainContains(lines <-chan string, substr string, d time.Duration) bool {
 
 func TestSSEPresenceJoinAndLeave(t *testing.T) {
 	s, ts := testServer(t)
+	seedClaim(t, s, "G8PZT", "G8PZT")
 	lines, cancel := openStream(t, ts.URL, "G8PZT")
 	if !drainContains(lines, `"call":"G8PZT"`, 2*time.Second) {
 		t.Fatal("no 'you' snapshot for G8PZT")
@@ -128,7 +164,9 @@ func TestSSEPresenceJoinAndLeave(t *testing.T) {
 }
 
 func TestSSEDeliversAnotherUsersMessage(t *testing.T) {
-	_, ts := testServer(t)
+	s, ts := testServer(t)
+	seedClaim(t, s, "G8PZT", "G8PZT")
+	seedClaim(t, s, "M0LTE", "M0LTE")
 	lines, cancel := openStream(t, ts.URL, "G8PZT")
 	defer cancel()
 	drainContains(lines, `"call":"G8PZT"`, time.Second)
@@ -162,6 +200,8 @@ func TestSendThenHistory(t *testing.T) {
 
 func TestTopicSwitchIsolation(t *testing.T) {
 	s, ts := testServer(t)
+	seedClaim(t, s, "G8PZT", "G8PZT")
+	seedClaim(t, s, "M0LTE", "M0LTE")
 	// G8PZT stays in General; M0LTE holds a stream (its presence) and moves to DX.
 	lines, cancel := openStream(t, ts.URL, "G8PZT")
 	defer cancel()

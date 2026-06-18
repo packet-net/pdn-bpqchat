@@ -116,7 +116,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := web.New(cfg.WebPort, cfg.BoundCallsign(), hub, log).Run(ctx); err != nil {
+		if err := web.New(cfg.WebPort, cfg.BoundCallsign(), hub, store, log).Run(ctx); err != nil {
 			log.Error("web tile stopped", "err", err)
 			stop()
 		}

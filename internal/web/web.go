@@ -38,18 +38,6 @@ func IdentityFromRequest(r *http.Request) Identity {
 	}
 }
 
-// viewerCall is the chat callsign for a web request. The gateway injects the
-// authenticated viewer (X-Pdn-User); when auth is off (no injected user) the
-// local node owner is the viewer, and we use the node's own callsign — a real,
-// on-air-valid call (not a placeholder), so the owner appears as a proper
-// participant to linked BPQ nodes rather than a non-callsign like "SYSOP".
-func (s *Server) viewerCall(r *http.Request) string {
-	if u := IdentityFromRequest(r).User; u != "" {
-		return u
-	}
-	return s.ownerCall
-}
-
 // baseCall strips the AX.25 SSID suffix (BASE-SSID) to yield the operator's
 // bare callsign. A callsign base never contains a hyphen, so cut at the first.
 func baseCall(callsign string) string {
@@ -65,18 +53,22 @@ type Server struct {
 	callsign  string
 	ownerCall string // node base call (chat callsign minus SSID) — the owner's on-air identity
 	hub       *chat.Hub
+	claims    ClaimStore // pdn-user → claimed callsign mapping (S2); nil disables claims (owner-only)
 	log       *slog.Logger
 	srv       *http.Server
 	presence  *presence
 }
 
-// New builds the web server bound to the chat hub.
-func New(port int, callsign string, hub *chat.Hub, log *slog.Logger) *Server {
+// New builds the web server bound to the chat hub. claims is the durable pdn-user
+// → callsign mapping (the multi-user web plane, S2); pass nil for a degenerate
+// owner-only run (every viewer takes the node-owner fallback).
+func New(port int, callsign string, hub *chat.Hub, claims ClaimStore, log *slog.Logger) *Server {
 	s := &Server{
 		port:      port,
 		callsign:  callsign,
 		ownerCall: baseCall(callsign),
 		hub:       hub,
+		claims:    claims,
 		log:       log,
 		presence:  newPresence(hub),
 	}
@@ -87,6 +79,7 @@ func New(port int, callsign string, hub *chat.Hub, log *slog.Logger) *Server {
 	mux.HandleFunc("/topic", s.handleTopic)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/history", s.handleHistory)
+	mux.HandleFunc("/claim", s.handleClaim)
 	mux.HandleFunc("/", s.handleIndex)
 	// gatewayTrust fronts the whole mux: 403 anything not gateway-stamped (except
 	// the daemon's own /healthz probe), capture X-Forwarded-Prefix into context,
@@ -128,6 +121,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+		return
+	}
+	// An authenticated pdn user who has not yet claimed a callsign sees the claim
+	// form instead of the chat — they have no chat identity to post under yet.
+	// Anonymous (auth-off) viewers resolve to the node owner and skip this.
+	if _, mapped := s.resolveViewer(r); !mapped {
+		s.renderClaimForm(w, r, "")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

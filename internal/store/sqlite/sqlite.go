@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
@@ -59,9 +60,77 @@ CREATE INDEX IF NOT EXISTS idx_messages_topic_ts
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS claims (
+    pdn_user   TEXT PRIMARY KEY,
+    callsign   TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL
+);
+-- One callsign maps to at most one pdn user: the cross-account-collision guard
+-- (a callsign can't be claimed by two web identities). Case-insensitive so
+-- "m0lte" and "M0LTE" are the same claim — callsigns are case-folded on write.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_callsign
+    ON claims (callsign COLLATE NOCASE);`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("sqlite: migrate: %w", err)
+	}
+	return nil
+}
+
+// ErrCallsignClaimed is returned by Claim when the callsign is already mapped to
+// a DIFFERENT pdn user (the cross-account collision → HTTP 409). It is a sentinel
+// so the web layer can distinguish the 409 case from a genuine store failure.
+var ErrCallsignClaimed = errors.New("sqlite: callsign already claimed by another user")
+
+// ClaimedCall returns the callsign a pdn user has claimed, or ("", false) when
+// the user has no claim yet. The mapping survives reinstall (it lives in the
+// state-dir db, not RAM), so a returning user keeps their identity.
+func (s *Store) ClaimedCall(ctx context.Context, pdnUser string) (string, bool, error) {
+	var cs string
+	err := s.db.QueryRowContext(ctx, `SELECT callsign FROM claims WHERE pdn_user = ?`, pdnUser).Scan(&cs)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("sqlite: claimed call: %w", err)
+	}
+	return cs, true, nil
+}
+
+// Claim maps a pdn user to a callsign (upsert: a user may re-claim / change their
+// own callsign). The unique index on callsign enforces that one callsign belongs
+// to at most one pdn user; an attempt to claim a callsign already held by ANOTHER
+// user returns ErrCallsignClaimed (→ 409). Re-claiming the SAME callsign a user
+// already holds is an idempotent no-op success.
+func (s *Store) Claim(ctx context.Context, pdnUser, callsign string, claimedAt time.Time) error {
+	// Idempotent re-claim of the caller's own current callsign: nothing to do
+	// (and we must not trip the collision check against the user's own row).
+	if cur, ok, err := s.ClaimedCall(ctx, pdnUser); err != nil {
+		return err
+	} else if ok && cur == callsign {
+		return nil
+	}
+	// Reject a callsign already held by a DIFFERENT pdn user before we attempt the
+	// upsert, so the error is the collision sentinel rather than a raw constraint
+	// violation (the unique index is the backstop if a concurrent writer races).
+	var holder string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT pdn_user FROM claims WHERE callsign = ? COLLATE NOCASE`, callsign).Scan(&holder)
+	if err == nil && holder != pdnUser {
+		return ErrCallsignClaimed
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("sqlite: claim lookup: %w", err)
+	}
+	const q = `INSERT INTO claims (pdn_user, callsign, claimed_at) VALUES (?, ?, ?)
+	           ON CONFLICT(pdn_user) DO UPDATE SET callsign = excluded.callsign, claimed_at = excluded.claimed_at`
+	if _, err := s.db.ExecContext(ctx, q, pdnUser, callsign, claimedAt.Unix()); err != nil {
+		// The unique-index backstop fires if a concurrent writer claimed the same
+		// callsign between our check and this insert — surface it as the 409 too.
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return ErrCallsignClaimed
+		}
+		return fmt.Errorf("sqlite: claim: %w", err)
 	}
 	return nil
 }
