@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -37,6 +38,14 @@ type sink interface {
 	sendRaw(raw string) error
 }
 
+// statuser is the optional telemetry a registered sink may expose for the S5
+// federation panel (a real *Link does; the in-memory test sink does not). Kept
+// separate from sink so the relay contract stays minimal and the test stand-in
+// need not synthesise link telemetry.
+type statuser interface {
+	Status() LinkStatus
+}
+
 // NewRouter creates a router and starts the local-origin fan-out loop.
 func NewRouter(hub *chat.Hub) *Router {
 	sub, cancel := hub.Subscribe()
@@ -69,6 +78,27 @@ func (r *Router) Remove(id string) {
 	r.mu.Lock()
 	delete(r.links, id)
 	r.mu.Unlock()
+}
+
+// LinkStatuses returns a snapshot of the live per-link telemetry for every
+// registered link that can report it (real *Link sinks), sorted by peer callsign
+// — the per-link state/last-seen/RTT the S5 admin federation panel renders. A
+// sink that exposes no telemetry (the in-memory test stand-in) is skipped.
+func (r *Router) LinkStatuses() []LinkStatus {
+	r.mu.Lock()
+	sinks := make([]sink, 0, len(r.links))
+	for _, l := range r.links {
+		sinks = append(sinks, l)
+	}
+	r.mu.Unlock()
+	out := make([]LinkStatus, 0, len(sinks))
+	for _, l := range sinks {
+		if st, ok := l.(statuser); ok {
+			out = append(out, st.Status())
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PeerCall < out[j].PeerCall })
+	return out
 }
 
 // fanOutLocal forwards locally-originated hub events to every peer. Peer-origin

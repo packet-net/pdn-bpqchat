@@ -38,8 +38,81 @@ type Link struct {
 	keepaliveEvery time.Duration
 	expectTimeout  time.Duration
 
-	wmu      sync.Mutex
+	wmu sync.Mutex
+
+	// statMu guards the live link telemetry the S5 federation panel reads
+	// (Status). lastSeen advances on every received record (liveness); rtt is the
+	// most recent keepalive→poll-response round-trip; sentPing is the send time of
+	// the in-flight keepalive whose poll-response we are timing.
+	statMu   sync.Mutex
 	lastSeen time.Time
+	rtt      time.Duration
+	sentPing time.Time
+	linkedAt time.Time
+}
+
+// LinkStatus is a point-in-time snapshot of one live peer link's telemetry — the
+// per-link state the admin federation panel (S5) renders alongside the hub's node
+// graph. It is a value copy (no internal pointers) so it is safe to hand to the
+// web layer.
+type LinkStatus struct {
+	PeerCall string        // the peer node's chat callsign (link identity)
+	Outbound bool          // true if we dialled the peer (vs. it dialled us)
+	LinkedAt time.Time     // when this link's serve loop came up
+	LastSeen time.Time     // when we last received any record on the link
+	RTT      time.Duration // most recent keepalive→poll-response round-trip (0 if none yet)
+}
+
+// Status returns a snapshot of this link's live telemetry for the federation
+// panel (S5).
+func (l *Link) Status() LinkStatus {
+	l.statMu.Lock()
+	defer l.statMu.Unlock()
+	return LinkStatus{
+		PeerCall: l.peerCall,
+		Outbound: l.outbound,
+		LinkedAt: l.linkedAt,
+		LastSeen: l.lastSeen,
+		RTT:      l.rtt,
+	}
+}
+
+// markSeen advances the link's last-seen liveness timestamp (a record arrived).
+func (l *Link) markSeen() {
+	l.statMu.Lock()
+	l.lastSeen = time.Now()
+	l.statMu.Unlock()
+}
+
+// markPingSent records that we have just sent a keepalive whose poll-response we
+// will time for RTT — but only if there is no ping already in flight, so a burst
+// of keepalives times the FIRST one rather than restarting the clock each tick.
+func (l *Link) markPingSent() {
+	l.statMu.Lock()
+	if l.sentPing.IsZero() {
+		l.sentPing = time.Now()
+	}
+	l.statMu.Unlock()
+}
+
+// recordPong closes the RTT timing window when a poll-response arrives for the
+// in-flight keepalive, updating the most-recent round-trip. A pong with no ping
+// outstanding (the peer polling us unprompted) is ignored for RTT.
+func (l *Link) recordPong() {
+	l.statMu.Lock()
+	if !l.sentPing.IsZero() {
+		l.rtt = time.Since(l.sentPing)
+		l.sentPing = time.Time{}
+	}
+	l.statMu.Unlock()
+}
+
+// sinceLastSeen reports how long since a record last arrived (for the keepalive
+// dead-link check), reading the same guarded field markSeen advances.
+func (l *Link) sinceLastSeen() time.Duration {
+	l.statMu.Lock()
+	defer l.statMu.Unlock()
+	return time.Since(l.lastSeen)
 }
 
 // Config configures a Link.
@@ -188,7 +261,11 @@ func (l *Link) expect(ctx context.Context, br *bufio.Reader, want string) error 
 // handshake (e.g. the identity-bearing first record of an inbound IP link) and
 // is processed before the read loop so it is not lost.
 func (l *Link) serve(ctx context.Context, br *bufio.Reader, pending *Record) error {
-	l.lastSeen = time.Now()
+	now := time.Now()
+	l.statMu.Lock()
+	l.lastSeen = now
+	l.linkedAt = now
+	l.statMu.Unlock()
 	l.router.Add(l)
 	defer l.router.Remove(l.id())
 	l.hub.LinkNode(l.peerCall, "", l.version)
@@ -372,13 +449,15 @@ func (l *Link) handle(line string) {
 
 // handleRecord processes one already-decoded control record.
 func (l *Link) handleRecord(rec Record) {
-	l.lastSeen = time.Now()
+	l.markSeen()
 	switch rec.Type {
 	case IDKeepalive, IDPoll:
 		// Both elicit a poll response; refresh liveness.
 		_ = l.sendRaw(encodePollResp(l.ourNode, l.peerCall))
 	case IDPollResp:
-		// liveness already refreshed above.
+		// A poll-response to our keepalive: close the RTT timing window (liveness
+		// was already refreshed by markSeen above).
+		l.recordPong()
 	default:
 		l.router.Ingest(rec, l.id())
 	}
@@ -392,10 +471,12 @@ func (l *Link) keepaliveLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if time.Since(l.lastSeen) > LinkTimeout {
+			if l.sinceLastSeen() > LinkTimeout {
 				_ = l.rw.Close() // dead peer — drop the link
 				return
 			}
+			// Time this keepalive's poll-response for RTT, then send it.
+			l.markPingSent()
 			if err := l.sendKeepalive(); err != nil {
 				return
 			}

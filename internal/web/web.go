@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/m0lte/pdn-bpqchat/internal/chat"
+	"github.com/m0lte/pdn-bpqchat/internal/peer"
 )
 
 // Identity is the authenticated viewer the gateway injects per request.
@@ -80,6 +81,33 @@ func (s *Server) requireWrite(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// isAdmin reports whether an identity holds the admin scope — the gate for the S5
+// federation surfaces (the topology panel and the allow-list editor).
+//
+// Unlike canWrite, the management-auth-off / anonymous path is NOT auto-admin: a
+// node reached with management auth on but the viewer at a lower scope must not be
+// able to rewrite the federation trust set. But auth-OFF (empty X-Pdn-User) is the
+// node owner on their own loopback node — the degenerate single-user operator — so
+// they ARE the admin (mirrors canWrite's owner reasoning). The gateway is the sole
+// reachable front (loopback), so the scope header is trustworthy.
+func isAdmin(id Identity) bool {
+	if strings.TrimSpace(id.User) == "" {
+		return true // management auth off → node owner → admin of their own node
+	}
+	return strings.EqualFold(strings.TrimSpace(id.Scope), ScopeAdmin)
+}
+
+// requireAdmin enforces isAdmin, writing a 403 (and returning false) for a viewer
+// short of admin scope. The S5 federation panel and allow-list editor call it
+// before reading or mutating any federation state.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if isAdmin(IdentityFromRequest(r)) {
+		return true
+	}
+	http.Error(w, "forbidden: federation administration requires admin scope", http.StatusForbidden)
+	return false
+}
+
 // baseCall strips the AX.25 SSID suffix (BASE-SSID) to yield the operator's
 // bare callsign. A callsign base never contains a hyphen, so cut at the first.
 func baseCall(callsign string) string {
@@ -89,16 +117,54 @@ func baseCall(callsign string) string {
 	return callsign
 }
 
+// ConfiguredPeer is one outbound peer chat node the operator configured the daemon
+// to dial (an IP/telnet peer or an RF peer). The admin federation panel (S5) lists
+// these alongside the live mesh-node graph so the sysop can see who we dial OUT to
+// — distinct from who has linked IN. It is a host-free view (no config dependency
+// in this package): main.go projects config.Peers/RFPeers into this shape.
+type ConfiguredPeer struct {
+	Call      string // peer chat callsign
+	Transport string // "ip" | "rf" — how we reach it
+	Target    string // dial target (host:port for ip; open-to callsign for rf)
+}
+
+// Federation wires the admin federation panel + allow-list editor (S5) to the
+// live peering machinery. All fields are OPTIONAL: a Server built without it (the
+// default New) has no /peers surface — the federation routes return 503 — which is
+// the standalone / test posture. main.go supplies it via WithFederation.
+type Federation struct {
+	// Allow is the SHARED inbound-peer allow-list both ingresses already hold; the
+	// editor mutates this very pointer so an add/remove takes effect live at both.
+	Allow *peer.AllowList
+	// AllowStore persists the editable set after an edit so it survives a restart
+	// (the same config-table seam LoadAllowList/PersistAllowList use). nil → RAM-only.
+	AllowStore peer.AllowConfigStore
+	// Router exposes the live per-link telemetry (state/last-seen/RTT) for the panel.
+	Router *peer.Router
+	// Peers are the operator-configured outbound peers, for display.
+	Peers []ConfiguredPeer
+}
+
 // Server is the loopback web chat.
 type Server struct {
 	port      int
 	callsign  string
 	ownerCall string // node base call (chat callsign minus SSID) — the owner's on-air identity
 	hub       *chat.Hub
-	claims    ClaimStore // pdn-user → claimed callsign mapping (S2); nil disables claims (owner-only)
+	claims    ClaimStore  // pdn-user → claimed callsign mapping (S2); nil disables claims (owner-only)
+	fed       *Federation // admin federation panel + allow-list editor wiring (S5); nil disables /peers
 	log       *slog.Logger
 	srv       *http.Server
 	presence  *presence
+}
+
+// WithFederation attaches the admin federation panel + allow-list editor wiring
+// (S5) to the server, enabling GET /peers and POST /peers/allow. Returns the same
+// Server so the daemon can chain it onto New. Without it the federation routes
+// answer 503 (the standalone / test posture). A nil fed is a no-op.
+func (s *Server) WithFederation(fed *Federation) *Server {
+	s.fed = fed
+	return s
 }
 
 // New builds the web server bound to the chat hub. claims is the durable pdn-user
@@ -123,6 +189,8 @@ func New(port int, callsign string, hub *chat.Hub, claims ClaimStore, log *slog.
 	mux.HandleFunc("/history", s.handleHistory)
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/claim", s.handleClaim)
+	mux.HandleFunc("/peers", s.handlePeers)            // admin: federation status panel (S5)
+	mux.HandleFunc("/peers/allow", s.handlePeersAllow) // admin: inbound-peer allow-list editor (S5)
 	mux.HandleFunc("/", s.handleIndex)
 	// gatewayTrust fronts the whole mux: 403 anything not gateway-stamped (except
 	// the daemon's own /healthz probe), capture X-Forwarded-Prefix into context,

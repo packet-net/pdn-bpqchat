@@ -139,6 +139,37 @@ var indexHTML = []byte(`<!doctype html>
   }
   body.embed button.settings { top: .35rem; }
   button.settings:hover { background: var(--line); }
+
+  /* Federation (admin) button — sits left of Settings; hidden until we confirm
+     the viewer holds admin scope (a successful GET /peers). */
+  button.fed {
+    position: fixed; top: .5rem; right: 6.2rem; z-index: 40;
+    padding: .3rem .6rem; font: inherit; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink);
+    display: none;
+  }
+  body.embed button.fed { top: .35rem; }
+  button.fed.show { display: inline-block; }
+  button.fed:hover { background: var(--line); }
+
+  /* Federation panel internals */
+  .fedsec { margin: 0 0 1rem; }
+  .fedsec h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0 0 .35rem; }
+  .fedsec table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .fedsec th, .fedsec td { text-align: left; padding: .25rem .4rem; border-bottom: 1px solid var(--line); }
+  .fedsec th { color: var(--muted); font-weight: 600; }
+  .fedsec .empty { color: var(--muted); font-style: italic; font-size: .85rem; }
+  .fedsec .badge { color: var(--node); font-size: .82em; }
+  .allowrow { display: flex; align-items: center; gap: .4rem; padding: .2rem 0; }
+  .allowrow .call { font-weight: 600; flex: 1; }
+  .allowrow .pin { color: var(--muted); font-size: .8rem; font-style: italic; }
+  .allowrow button.rm { padding: .15rem .5rem; font: inherit; cursor: pointer; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); color: var(--priv); }
+  form.allowadd { display: flex; gap: .4rem; margin-top: .5rem; }
+  form.allowadd input { flex: 1; padding: .4rem .55rem; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+  form.allowadd button { padding: .4rem .8rem; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45);
     display: none; align-items: center; justify-content: center; z-index: 50; }
   .modal.open { display: flex; }
@@ -172,6 +203,51 @@ var indexHTML = []byte(`<!doctype html>
 <!-- Floating settings control: outside the appbar so it survives the embed-mode
      appbar hide (the pdn slot supplies its own chrome). -->
 <button class="settings" id="settingsbtn" title="Settings">Settings</button>
+
+<!-- Federation (admin) control — revealed only after a successful GET /peers
+     confirms the viewer holds admin scope (S5). Opens the federation status panel
+     + inbound-peer allow-list editor. -->
+<button class="fed" id="fedbtn" title="Federation (admin)">Federation</button>
+
+<!-- Federation panel (S5, admin scope): the known mesh-node graph, live per-link
+     state/last-seen/RTT, the operator-configured outbound peers, and the
+     inbound-peer allow-list editor (add/remove against the live shared list). -->
+<div class="modal" id="fedmodal" role="dialog" aria-modal="true" aria-labelledby="fedtitle">
+  <div class="sheet">
+    <h2 id="fedtitle">Federation</h2>
+    <p class="sub">Linked nodes, per-link health, and the inbound-peer allow-list. Edits apply live to every ingress and survive a restart.</p>
+
+    <div class="fedsec">
+      <h3>Inbound allow-list</h3>
+      <div id="allowlist"></div>
+      <form class="allowadd" id="allowadd">
+        <input id="allowcall" autocomplete="off" autocapitalize="characters" placeholder="add callsign e.g. GB7NDH-1">
+        <button title="Allow this peer to link in">Add</button>
+      </form>
+      <div id="pinnedlist"></div>
+    </div>
+
+    <div class="fedsec">
+      <h3>Known nodes</h3>
+      <div id="fednodes"></div>
+    </div>
+
+    <div class="fedsec">
+      <h3>Live links</h3>
+      <div id="fedlinks"></div>
+    </div>
+
+    <div class="fedsec">
+      <h3>Configured outbound peers</h3>
+      <div id="fedconfigured"></div>
+    </div>
+
+    <div class="actions">
+      <span class="saved" id="fed-msg" hidden></span>
+      <button type="button" class="cancel" id="fed-close">Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- Settings pane (S3): name/QTH + the BPQ display flags. A flip POSTs to
      /settings, which persists into the hub user so RF/mesh peers see the same
@@ -421,6 +497,137 @@ document.getElementById('settingsform').addEventListener('submit', async ev => {
   } else {
     alert('Could not save settings.');
   }
+});
+
+// --- Federation panel (S5, admin scope) ---
+// The split federation decision: origin-node badges (above) render for EVERYONE;
+// the topology + per-link state and the allow-list editor are admin-only. The SPA
+// discovers admin scope by probing GET /peers — a 200 reveals the button; a 403
+// (not admin) or 503 (no federation wiring) leaves it hidden. The editor POSTs to
+// /peers/allow, which mutates the live shared allow-list and persists it.
+const fedBtn = document.getElementById('fedbtn');
+const fedModal = document.getElementById('fedmodal');
+const fedMsg = document.getElementById('fed-msg');
+
+function relTime(ms){
+  if (!ms) return '—';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s/60) + 'm ago';
+  return Math.round(s/3600) + 'h ago';
+}
+
+function renderAllow(view){
+  const al = document.getElementById('allowlist');
+  al.innerHTML = '';
+  const allow = view.allow || [];
+  if (!allow.length) {
+    al.innerHTML = '<div class="empty">No inbound peers allowed — default-deny.</div>';
+  } else {
+    allow.forEach(call => {
+      const row = document.createElement('div'); row.className = 'allowrow';
+      row.innerHTML = '<span class="call">'+esc(call)+'</span>';
+      const rm = document.createElement('button'); rm.className = 'rm'; rm.textContent = 'Remove';
+      rm.onclick = () => editAllow('remove', call);
+      row.appendChild(rm);
+      al.appendChild(row);
+    });
+  }
+  const pl = document.getElementById('pinnedlist');
+  pl.innerHTML = '';
+  (view.pinned || []).forEach(call => {
+    const row = document.createElement('div'); row.className = 'allowrow';
+    row.innerHTML = '<span class="call">'+esc(call)+'</span><span class="pin">dialed — always allowed</span>';
+    pl.appendChild(row);
+  });
+}
+
+function renderFedNodes(view){
+  const el = document.getElementById('fednodes');
+  const nodes = view.nodes || [];
+  if (!nodes.length) { el.innerHTML = '<div class="empty">No nodes linked.</div>'; return; }
+  let h = '<table><tr><th>Node</th><th>Alias</th><th>Version</th><th>Linked</th></tr>';
+  nodes.forEach(n => {
+    h += '<tr><td>'+esc(n.call)+'</td><td>'+esc(n.alias||'')+'</td><td>'+esc(n.version||'')+'</td><td>'+relTime(n.linkedSince)+'</td></tr>';
+  });
+  el.innerHTML = h + '</table>';
+}
+
+function renderFedLinks(view){
+  const el = document.getElementById('fedlinks');
+  const links = view.links || [];
+  if (!links.length) { el.innerHTML = '<div class="empty">No live links.</div>'; return; }
+  let h = '<table><tr><th>Peer</th><th>Dir</th><th>Last seen</th><th>RTT</th></tr>';
+  links.forEach(l => {
+    h += '<tr><td>'+esc(l.peer)+'</td><td>'+(l.outbound?'out':'in')+'</td><td>'+relTime(l.lastSeen)+'</td><td>'+(l.rttMs?l.rttMs+'ms':'—')+'</td></tr>';
+  });
+  el.innerHTML = h + '</table>';
+}
+
+function renderFedConfigured(view){
+  const el = document.getElementById('fedconfigured');
+  const peers = view.configured || [];
+  if (!peers.length) { el.innerHTML = '<div class="empty">None configured.</div>'; return; }
+  let h = '<table><tr><th>Peer</th><th>Transport</th><th>Target</th></tr>';
+  peers.forEach(p => {
+    h += '<tr><td>'+esc(p.call)+'</td><td>'+esc(p.transport)+'</td><td>'+esc(p.target||'')+'</td></tr>';
+  });
+  el.innerHTML = h + '</table>';
+}
+
+function renderFed(view){
+  renderAllow(view);
+  renderFedNodes(view);
+  renderFedLinks(view);
+  renderFedConfigured(view);
+}
+
+async function loadFed(){
+  const r = await fetch('peers');
+  if (!r.ok) return null;
+  return r.json();
+}
+
+// probeFed reveals the Federation button iff GET /peers is admitted (admin scope).
+async function probeFed(){
+  try {
+    const r = await fetch('peers');
+    if (r.ok) { fedBtn.classList.add('show'); }
+  } catch (e) { /* leave hidden */ }
+}
+probeFed();
+
+async function openFed(){
+  fedMsg.hidden = true;
+  const view = await loadFed();
+  if (view) renderFed(view);
+  fedModal.classList.add('open');
+}
+function closeFed(){ fedModal.classList.remove('open'); }
+
+async function editAllow(action, call){
+  const r = await fetch('peers/allow', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action, callsign: call})});
+  if (r.ok) {
+    const view = await loadFed(); // refetch the full panel so links/nodes stay current
+    if (view) renderFed(view);
+    fedMsg.textContent = action === 'add' ? ('Allowed '+call) : ('Removed '+call);
+    fedMsg.hidden = false;
+  } else if (r.status === 403) {
+    alert('Admin scope is required to edit the allow-list.');
+  } else {
+    alert('Could not apply the allow-list edit.');
+  }
+}
+
+fedBtn.addEventListener('click', openFed);
+document.getElementById('fed-close').addEventListener('click', closeFed);
+fedModal.addEventListener('click', ev => { if (ev.target === fedModal) closeFed(); });
+document.getElementById('allowadd').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const inp = document.getElementById('allowcall');
+  const call = inp.value.trim().toUpperCase(); if (!call) return; inp.value = '';
+  await editAllow('add', call);
 });
 </script>
 </body>

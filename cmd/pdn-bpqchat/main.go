@@ -31,6 +31,20 @@ var version = "dev"
 
 func sprintfMain(format string, a ...any) string { return fmt.Sprintf(format, a...) }
 
+// configuredPeers projects the operator-configured outbound peers (IP/telnet +
+// RF) into the host-free web.ConfiguredPeer view the admin federation panel (S5)
+// renders — so the web package needs no dependency on the config package.
+func configuredPeers(cfg *config.Config) []web.ConfiguredPeer {
+	out := make([]web.ConfiguredPeer, 0, len(cfg.Peers)+len(cfg.RFPeers))
+	for _, p := range cfg.Peers {
+		out = append(out, web.ConfiguredPeer{Call: p.Call, Transport: "ip", Target: p.Addr})
+	}
+	for _, p := range cfg.RFPeers {
+		out = append(out, web.ConfiguredPeer{Call: p.PeerCall, Transport: "rf", Target: p.OpenTo})
+	}
+	return out
+}
+
 // servePeerListener accepts inbound IP peer links until ctx is cancelled. Each
 // accepted connection is handed to peer.ServeInboundIP, which runs the BPQ chat
 // node-link handshake, enforces the inbound-peer allow-list, and bridges an
@@ -112,16 +126,6 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Loopback web tile (full chat UI in W4).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := web.New(cfg.WebPort, cfg.BoundCallsign(), hub, store, log).Run(ctx); err != nil {
-			log.Error("web tile stopped", "err", err)
-			stop()
-		}
-	}()
-
 	// Peering: the relay router (shared by RF and IP peers).
 	router := peer.NewRouter(hub)
 	defer router.Close()
@@ -143,6 +147,27 @@ func main() {
 		"editable", allow.Entries(),
 		"effective", allow.AllEntries(),
 		"count", len(allow.AllEntries()))
+
+	// Loopback web tile (full chat UI). The admin federation panel + allow-list
+	// editor (S5) is wired to the SHARED allow-list, the relay router (live per-link
+	// telemetry), the config-table persistence seam, and the operator-configured
+	// outbound peers — so an admin edit takes effect live at both ingresses and
+	// survives a restart.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv := web.New(cfg.WebPort, cfg.BoundCallsign(), hub, store, log).
+			WithFederation(&web.Federation{
+				Allow:      allow,
+				AllowStore: store,
+				Router:     router,
+				Peers:      configuredPeers(cfg),
+			})
+		if err := srv.Run(ctx); err != nil {
+			log.Error("web tile stopped", "err", err)
+			stop()
+		}
+	}()
 
 	// RHP attachment: bind the callsign; serve inbound RF users and inbound peer
 	// links; dial configured RF peers over AX.25.
