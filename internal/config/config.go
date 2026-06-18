@@ -97,6 +97,35 @@ func (c *Config) EffectiveAllow() []string {
 	return out
 }
 
+// DialedPeerCallsigns is the set of callsigns of peers we dial OUT to
+// (Peers/RFPeers), canonicalised and de-duplicated. These are PINNED into the
+// allow-list as implicitly trusted inbound peers (we already chose to dial them),
+// kept SEPARATE from the operator-editable/persisted PeerAllow set: a peer we
+// actively dial keeps its inbound trust even if it is not (or is removed from) the
+// editable allow-list. This is the pinned-entry source for peer.AllowList.Pin.
+func (c *Config) DialedPeerCallsigns() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(s string) {
+		cs := strings.ToUpper(strings.TrimSpace(s))
+		if cs == "" {
+			return
+		}
+		if _, ok := seen[cs]; ok {
+			return
+		}
+		seen[cs] = struct{}{}
+		out = append(out, cs)
+	}
+	for _, p := range c.Peers {
+		add(p.Call)
+	}
+	for _, p := range c.RFPeers {
+		add(p.PeerCall)
+	}
+	return out
+}
+
 // RFPeer is an outbound peer chat node reached over AX.25 via RHP. For a directly
 // reachable peer, OpenTo == PeerCall and Script is empty (a plain RHP open). For a
 // peer across the network, OpenTo is the first hop (a node we can open to) and

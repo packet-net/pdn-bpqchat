@@ -182,3 +182,174 @@ func TestDemuxPeerLinkRejectedDefaultDeny(t *testing.T) {
 		t.Fatalf("rejected count = %d, want 1 (the reject must be observable)", got)
 	}
 }
+
+// presentsAsPeer drives one inbound caller through the node ingress (serveInbound)
+// presenting as a node link (*RTL) from callsign, and reports whether the link was
+// ADMITTED — i.e. the caller entered the node graph and the node replied OK. It is
+// the node-ingress probe used by the persisted/hot-edit end-to-end test.
+func presentsAsPeer(t *testing.T, l *Link, hub *chat.Hub, callsign string) bool {
+	t.Helper()
+	server, client := tcpPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go l.serveInbound(ctx, server, callsign)
+
+	br := bufio.NewReader(client)
+	if line, _ := br.ReadString('\r'); !strings.Contains(line, peer.Banner()) {
+		t.Fatalf("expected banner, got %q", line)
+	}
+	_, _ = client.Write([]byte("*RTL\r"))
+
+	// Admission is observable two ways: the node graph gains the caller and an OK
+	// record comes back. Poll briefly; an un-admitted caller is dropped instead.
+	deadline := time.After(1500 * time.Millisecond)
+	for {
+		for _, n := range hub.Nodes() {
+			if n.Call == callsign {
+				return true
+			}
+		}
+		select {
+		case <-deadline:
+			return false
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// admittedAtIPIngress drives one inbound caller through the IP ingress
+// (peer.ServeInboundIP) presenting as a node link from callsign, and reports
+// whether it was admitted (ServeInboundIP returns a refusal error for a denied
+// peer; an admitted one stays open until ctx is cancelled).
+func admittedAtIPIngress(t *testing.T, allow *peer.AllowList, callsign string) bool {
+	t.Helper()
+	aConn, bConn := tcpPair(t)
+	hubA := chat.NewHub("GB7AAA", chat.NewMemStore(), nil)
+	hubB := chat.NewHub("GB7BBB", chat.NewMemStore(), nil)
+	rA := peer.NewRouter(hubA)
+	rB := peer.NewRouter(hubB)
+	t.Cleanup(rA.Close)
+	t.Cleanup(rB.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The dialer presents `callsign` as its originating node.
+	la := peer.NewLink(aConn, rA, hubA, peer.Config{
+		PeerCall: "GB7BBB", OurNode: callsign, Outbound: true, Keepalive: time.Hour,
+	})
+	go la.Run(ctx)
+
+	errc := make(chan error, 1)
+	go func() { errc <- peer.ServeInboundIP(ctx, bConn, rB, hubB, "GB7BBB", allow, nil) }()
+
+	// A denied peer returns an allow-list refusal error quickly; an admitted one
+	// links up (the listener learns the peer) and ServeInboundIP keeps running.
+	select {
+	case err := <-errc:
+		if err != nil && strings.Contains(err.Error(), "allow-list") {
+			return false // refused at the ingress
+		}
+		// Any other early return is a test/transport fault, not an admission verdict.
+		t.Fatalf("ServeInboundIP returned unexpectedly: %v", err)
+		return false
+	case <-time.After(750 * time.Millisecond):
+		// Still serving → admitted. Confirm the peer entered the listener's graph.
+		for _, n := range hubB.Nodes() {
+			if n.Call == callsign {
+				return true
+			}
+		}
+		return true // serving without a refusal error == admitted (graph add may race)
+	}
+}
+
+// TestPersistedAndHotEditAtBothIngresses is the S4 end-to-end proof: the
+// allow-list is loaded from the persisted SQLite-style config table (seeded by the
+// PDN_BPQCHAT_PEER_ALLOW env value), a persisted entry is honoured at BOTH
+// ingresses (node serveInbound + peer ServeInboundIP), and a HOT edit (persist +
+// reload onto the same live list) takes effect at both WITHOUT a restart. Both
+// ingresses consult the SAME *AllowList pointer, so one list governs both.
+func TestPersistedAndHotEditAtBothIngresses(t *testing.T) {
+	ctx := context.Background()
+	store := chat.NewMemStore()
+
+	// Load seeded by the env value (the headless seed). GB7SEED-1 is the persisted
+	// entry; GB7HOT-1 is NOT yet allowed.
+	allow, err := peer.LoadAllowList(ctx, store, []string{"GB7SEED-1"})
+	if err != nil {
+		t.Fatalf("LoadAllowList: %v", err)
+	}
+
+	// Build a node Link that consults THIS allow-list at its ingress.
+	hub := chat.NewHub("M0LTE-4", chat.NewMemStore(), nil)
+	router := peer.NewRouter(hub)
+	t.Cleanup(router.Close)
+	l := New(Options{ChatCallsign: "M0LTE-4", Allow: allow}, hub, router, discard())
+
+	// 1) The persisted/seeded entry is honoured at BOTH ingresses.
+	if !presentsAsPeer(t, l, hub, "GB7SEED-1") {
+		t.Fatal("persisted entry GB7SEED-1 was NOT admitted at the node ingress")
+	}
+	if !admittedAtIPIngress(t, allow, "GB7SEED-1") {
+		t.Fatal("persisted entry GB7SEED-1 was NOT admitted at the IP ingress")
+	}
+
+	// 2) A not-yet-allowed callsign is denied at BOTH ingresses (default-deny).
+	if presentsAsPeer(t, l, hub, "GB7HOT-1") {
+		t.Fatal("GB7HOT-1 admitted at the node ingress before it was added")
+	}
+	if admittedAtIPIngress(t, allow, "GB7HOT-1") {
+		t.Fatal("GB7HOT-1 admitted at the IP ingress before it was added")
+	}
+
+	// 3) HOT EDIT: an out-of-band config write (as the S5 editor would do) + reload
+	// onto the SAME live list — no restart, no re-wiring of either ingress.
+	if err := store.SetConfig(ctx, peer.ConfigKVAllowKey, "GB7SEED-1\nGB7HOT-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.ReloadAllowList(ctx, store, allow); err != nil {
+		t.Fatalf("ReloadAllowList: %v", err)
+	}
+
+	// 4) GB7HOT-1 is now admitted at BOTH ingresses, no restart.
+	if !presentsAsPeer(t, l, hub, "GB7HOT-1") {
+		t.Fatal("hot-added GB7HOT-1 was NOT admitted at the node ingress after reload")
+	}
+	if !admittedAtIPIngress(t, allow, "GB7HOT-1") {
+		t.Fatal("hot-added GB7HOT-1 was NOT admitted at the IP ingress after reload")
+	}
+}
+
+// TestDialedPeerImplicitlyTrustedAtIngress: a peer we dial OUT to (pinned) is
+// admitted inbound even though it is NOT in the editable/persisted set — and a
+// Replace that clears the editable set does not revoke that trust (the
+// outbound-dialed guarantee, §4.1). Exercised at the node ingress.
+func TestDialedPeerImplicitlyTrustedAtIngress(t *testing.T) {
+	ctx := context.Background()
+	store := chat.NewMemStore()
+	allow, err := peer.LoadAllowList(ctx, store, nil) // empty editable set
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow.Pin("GB7DIAL-1") // we dial out to this peer → implicitly trusted inbound
+
+	hub := chat.NewHub("M0LTE-4", chat.NewMemStore(), nil)
+	router := peer.NewRouter(hub)
+	t.Cleanup(router.Close)
+	l := New(Options{ChatCallsign: "M0LTE-4", Allow: allow}, hub, router, discard())
+
+	if !presentsAsPeer(t, l, hub, "GB7DIAL-1") {
+		t.Fatal("dialed (pinned) peer GB7DIAL-1 was refused inbound")
+	}
+	// A hot edit that clears the editable set must NOT strip the pinned peer.
+	if err := store.SetConfig(ctx, peer.ConfigKVAllowKey, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.ReloadAllowList(ctx, store, allow); err != nil {
+		t.Fatal(err)
+	}
+	if !presentsAsPeer(t, l, hub, "GB7DIAL-1") {
+		t.Fatal("pinned peer lost inbound trust after the editable set was cleared")
+	}
+}

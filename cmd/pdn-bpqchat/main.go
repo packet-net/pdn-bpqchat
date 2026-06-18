@@ -127,12 +127,22 @@ func main() {
 	defer router.Close()
 
 	// Inbound-peer allow-list (design.md §4.1): the single default-deny gate every
-	// inbound federation link is checked against — explicit PDN_BPQCHAT_PEER_ALLOW
-	// entries plus the callsigns of peers we dial out to (we already trust those).
-	// With nothing configured the list is empty and admits NO inbound peer.
-	allow := peer.NewAllowList(cfg.EffectiveAllow()...)
+	// inbound federation link is checked against. The EDITABLE set is loaded from
+	// the SQLite config table — persisted so the S5 web editor's live edits survive
+	// a restart — seeded by PDN_BPQCHAT_PEER_ALLOW on first run (headless seed). The
+	// callsigns of peers we dial out to are PINNED separately (we already trust
+	// those); they are not editor-owned and are never persisted. With nothing
+	// configured the list is empty and admits NO inbound peer.
+	allow, err := peer.LoadAllowList(ctx, store, cfg.PeerAllow)
+	if err != nil {
+		log.Error("cannot load peer allow-list", "err", err)
+		os.Exit(1)
+	}
+	allow.Pin(cfg.DialedPeerCallsigns()...)
 	log.Info("inbound peer allow-list (default-deny)",
-		"allowed", allow.Entries(), "count", len(allow.Entries()))
+		"editable", allow.Entries(),
+		"effective", allow.AllEntries(),
+		"count", len(allow.AllEntries()))
 
 	// RHP attachment: bind the callsign; serve inbound RF users and inbound peer
 	// links; dial configured RF peers over AX.25.

@@ -226,6 +226,31 @@ func TestEffectiveAllowUnionsOutboundPeers(t *testing.T) {
 	}
 }
 
+// TestDialedPeerCallsigns: the pinned (implicitly-trusted) set is exactly the
+// outbound-dialed peers (Peers/RFPeers), de-duplicated, and EXCLUDES the
+// operator-editable PeerAllow entries — those are persisted/edited separately, not
+// pinned (S4).
+func TestDialedPeerCallsigns(t *testing.T) {
+	c := &Config{
+		PeerAllow: []string{"GB7EDIT-1"}, // editable-only: must NOT appear in the pinned set
+		Peers:     []Peer{{Call: "GB7NDH-3", Addr: "10.0.0.1:8010"}},
+		RFPeers:   []RFPeer{{PeerCall: "GB7WOD-1"}, {PeerCall: "GB7WOD-1"}}, // dup collapses
+	}
+	got := c.DialedPeerCallsigns()
+	want := map[string]bool{"GB7NDH-3": true, "GB7WOD-1": true}
+	if len(got) != len(want) {
+		t.Fatalf("dialed peers = %v, want the 2 unique dialed callsigns %v", got, want)
+	}
+	for _, cs := range got {
+		if cs == "GB7EDIT-1" {
+			t.Fatal("editable-only PeerAllow entry leaked into the pinned dialed set")
+		}
+		if !want[cs] {
+			t.Fatalf("unexpected dialed-peer entry %q", cs)
+		}
+	}
+}
+
 func TestLoadParsesAllow(t *testing.T) {
 	t.Setenv("PDN_NODE_CALLSIGN", "M0LTE")
 	t.Setenv("PDN_BPQCHAT_PEER_ALLOW", "gb7ndh-3, gb7wod-1")
