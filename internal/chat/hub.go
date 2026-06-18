@@ -286,6 +286,31 @@ func (h *Hub) SetInfo(key UserKey, name, qth string) (bool, error) {
 	return true, nil
 }
 
+// SetFlags updates a user's display/behaviour flags (the BPQ `/` toggle set:
+// Echo/Bells/Colour/ShowNames/ShowTime). Flags are presentation state the core
+// carries so a web flip becomes the one persisted identity every plane — RF, web,
+// and mesh — observes for that user (design.md §3.5). Returns false (no event)
+// if nothing changed. Mirrors SetInfo: same lock discipline, same UserInfoChanged
+// event so subscribers refresh a single identity uniformly.
+func (h *Hub) SetFlags(key UserKey, flags UserFlags) (bool, error) {
+	key = canonKey(key)
+	h.mu.Lock()
+	u, ok := h.users[key]
+	if !ok {
+		h.mu.Unlock()
+		return false, ErrNoSuchUser
+	}
+	if u.Flags == flags {
+		h.mu.Unlock()
+		return false, nil
+	}
+	u.Flags = flags
+	changed := *u
+	h.mu.Unlock()
+	h.emit(UserInfoChanged{User: changed})
+	return true, nil
+}
+
 // LinkNode records a node in the mesh graph. Returns false (no event) if it was
 // already known (its link time is refreshed).
 func (h *Hub) LinkNode(call, alias, version string) bool {

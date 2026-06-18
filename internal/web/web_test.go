@@ -65,6 +65,13 @@ func testServerWithClaims(t *testing.T) (*Server, *httptest.Server, *sqlite.Stor
 // gwPost POSTs body to base+path as a gateway-stamped request, optionally as the
 // given viewer (call ""), and returns the response. All app requests arrive via
 // the gateway (X-Pdn-Gateway: 1), so the tests must mirror that.
+//
+// An authenticated viewer (call != "") is stamped with the operate scope: the
+// real gateway always supplies a scope for an authenticated user, and these
+// legacy write tests model a user who CAN post. The read-scope lurker boundary
+// (and the absent-scope-is-lurker default) is asserted explicitly by the scoped
+// helpers in settings_test.go (gwPostScoped) — not here. An anonymous request
+// (call "") carries no scope, exercising the management-auth-off owner path.
 func gwPost(t *testing.T, base, path, call, body string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
@@ -72,6 +79,7 @@ func gwPost(t *testing.T, base, path, call, body string) *http.Response {
 	req.Header.Set("Content-Type", "application/json")
 	if call != "" {
 		req.Header.Set("X-Pdn-User", call)
+		req.Header.Set("X-Pdn-Scope", "operate")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

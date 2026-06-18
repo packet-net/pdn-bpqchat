@@ -189,3 +189,41 @@ func TestSetInfoEmitsOnChange(t *testing.T) {
 		t.Fatal("no-op SetInfo should report no change")
 	}
 }
+
+// TestSetFlagsPersistsAndEmits (S3): a flag flip lands on the live hub user (so
+// RF/web/mesh observe one identity) and emits UserInfoChanged; re-applying the
+// same flags is a no-op (no spurious event).
+func TestSetFlagsPersistsAndEmits(t *testing.T) {
+	h := testHub(t)
+	key := UserKey{Call: "G8PZT", Node: "M0LTE-4"}
+	if _, err := h.Join(User{Call: key.Call, Origin: Origin{Node: key.Node, Local: true}}); err != nil {
+		t.Fatal(err)
+	}
+	ch, cancel := h.Subscribe()
+	defer cancel()
+
+	want := UserFlags{Echo: true, Bells: true, Colour: false, ShowNames: true, ShowTime: true}
+	changed, err := h.SetFlags(key, want)
+	if err != nil || !changed {
+		t.Fatalf("SetFlags changed=%v err=%v, want true/nil", changed, err)
+	}
+	if ev, ok := nextEvent(t, ch).(UserInfoChanged); !ok || ev.User.Flags != want {
+		t.Fatalf("want UserInfoChanged with %+v, got %#v", want, ev)
+	}
+	// The change is durable on the live user the RF/mesh plane reads.
+	if u, ok := h.User(key); !ok || u.Flags != want {
+		t.Fatalf("hub user flags = %+v (ok=%v), want %+v", u.Flags, ok, want)
+	}
+	if changed, _ := h.SetFlags(key, want); changed {
+		t.Fatal("no-op SetFlags should report no change")
+	}
+}
+
+// TestSetFlagsUnknownUser (S3): setting flags for an absent user is an error, not
+// a silent create.
+func TestSetFlagsUnknownUser(t *testing.T) {
+	h := testHub(t)
+	if _, err := h.SetFlags(UserKey{Call: "NOBODY", Node: "M0LTE-4"}, UserFlags{Echo: true}); err == nil {
+		t.Fatal("SetFlags on an unknown user should error")
+	}
+}

@@ -38,6 +38,48 @@ func IdentityFromRequest(r *http.Request) Identity {
 	}
 }
 
+// Pdn management-auth scopes (X-Pdn-Scope), least → most privileged. A request's
+// scope is the gateway's verdict on what the authenticated user may do; the app
+// trusts it because only the gateway can reach this loopback upstream (web.go
+// package doc). The set mirrors pdn's own read|operate|admin ladder.
+const (
+	ScopeRead    = "read"    // lurker: may observe (SSE/history/users) but not write
+	ScopeOperate = "operate" // may post, switch topics, change own settings
+	ScopeAdmin   = "admin"   // operate + admin-only surfaces (peer allow-list, topology)
+)
+
+// canWrite reports whether an identity may perform a write action — post a
+// message, switch topic, or change settings (the operate+ gate, S3).
+//
+// The single subtlety is the management-auth-off / anonymous path: with no
+// X-Pdn-User the gateway sends no scope either, and that viewer is the node owner
+// (resolveViewer's degenerate single-user fallback), who must be able to chat.
+// So an EMPTY user means auth is off — full access. Only an AUTHENTICATED viewer
+// (X-Pdn-User set) is held to the scope ladder, and a read scope (or any value
+// short of operate/admin) is a lurker: write actions return 403.
+func canWrite(id Identity) bool {
+	if strings.TrimSpace(id.User) == "" {
+		return true // management auth off → node owner → full access
+	}
+	switch strings.ToLower(strings.TrimSpace(id.Scope)) {
+	case ScopeOperate, ScopeAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+// requireWrite enforces canWrite for an authenticated viewer, writing a 403 (and
+// returning false) for a read-scope lurker. Handlers that mutate state call this
+// before touching the hub so a read-only viewer's POST never reaches the engine.
+func (s *Server) requireWrite(w http.ResponseWriter, r *http.Request) bool {
+	if canWrite(IdentityFromRequest(r)) {
+		return true
+	}
+	http.Error(w, "forbidden: your access is read-only (lurker)", http.StatusForbidden)
+	return false
+}
+
 // baseCall strips the AX.25 SSID suffix (BASE-SSID) to yield the operator's
 // bare callsign. A callsign base never contains a hyphen, so cut at the first.
 func baseCall(callsign string) string {
@@ -79,6 +121,7 @@ func New(port int, callsign string, hub *chat.Hub, claims ClaimStore, log *slog.
 	mux.HandleFunc("/topic", s.handleTopic)
 	mux.HandleFunc("/users", s.handleUsers)
 	mux.HandleFunc("/history", s.handleHistory)
+	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/claim", s.handleClaim)
 	mux.HandleFunc("/", s.handleIndex)
 	// gatewayTrust fronts the whole mux: 403 anything not gateway-stamped (except

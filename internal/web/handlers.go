@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -127,6 +128,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.requireWrite(w, r) { // read-scope viewers are lurkers (S3): no posting
+		return
+	}
 	call, ok := s.requireViewer(w, r)
 	if !ok {
 		return
@@ -153,6 +157,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTopic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireWrite(w, r) { // a topic switch is a write — lurkers stay put (S3)
 		return
 	}
 	call, ok := s.requireViewer(w, r)
@@ -234,6 +241,20 @@ func writeSSE(w http.ResponseWriter, event string, data any) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// decodeJSON unmarshals a JSON request body into v. An empty body decodes to the
+// zero value (so an empty settings POST is a no-op flip, not an error); any other
+// malformed body is reported so the caller can 400 it.
+func decodeJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		if err == io.EOF {
+			return nil // empty body → leave v at its zero value
+		}
+		return err
+	}
+	return nil
 }
 
 // readField reads a value from either a JSON body ({"text":"…"}) or a form post.

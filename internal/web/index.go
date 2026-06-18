@@ -129,6 +129,35 @@ var indexHTML = []byte(`<!doctype html>
     background: var(--accent); color: #fff; font-weight: 600;
   }
 
+  /* Settings button + pane. The button is a floating control (not in the appbar)
+     so it stays reachable when embedded in the pdn slot, where the SPA's own
+     appbar is hidden. */
+  button.settings {
+    position: fixed; top: .5rem; right: .6rem; z-index: 40;
+    padding: .3rem .6rem; font: inherit; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink);
+  }
+  body.embed button.settings { top: .35rem; }
+  button.settings:hover { background: var(--line); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: none; align-items: center; justify-content: center; z-index: 50; }
+  .modal.open { display: flex; }
+  .modal .sheet { background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 12px; padding: 1.3rem 1.4rem; width: min(28rem, 92vw); max-height: 90vh; overflow-y: auto; }
+  .modal .sheet h2 { margin: 0 0 .2rem; font-size: 1.1rem; }
+  .modal .sheet p.sub { margin: 0 0 1rem; color: var(--muted); font-size: .85rem; }
+  .modal .field { display: flex; flex-direction: column; gap: .25rem; margin-bottom: .8rem; }
+  .modal .field label { font-size: .8rem; color: var(--muted); }
+  .modal .field input[type=text] { padding: .5rem .65rem; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+  .modal .toggle { display: flex; align-items: center; gap: .55rem; padding: .3rem 0; cursor: pointer; }
+  .modal .toggle input { width: 1.1rem; height: 1.1rem; }
+  .modal .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; }
+  .modal .actions button { padding: .5rem 1rem; font: inherit; font-weight: 600; cursor: pointer; border: 0; border-radius: 8px; }
+  .modal .actions .save { background: var(--accent); color: #fff; }
+  .modal .actions .cancel { background: var(--line); color: var(--ink); }
+  .modal .saved { color: var(--me); font-size: .82rem; margin-right: auto; align-self: center; }
+
   @media (max-width: 640px) {
     nav.channels, aside.users { width: 9rem; }
   }
@@ -139,6 +168,38 @@ var indexHTML = []byte(`<!doctype html>
   <span class="brand">BPQ Chat</span>
   <span class="me">you: <b id="me">…</b></span>
 </header>
+
+<!-- Floating settings control: outside the appbar so it survives the embed-mode
+     appbar hide (the pdn slot supplies its own chrome). -->
+<button class="settings" id="settingsbtn" title="Settings">Settings</button>
+
+<!-- Settings pane (S3): name/QTH + the BPQ display flags. A flip POSTs to
+     /settings, which persists into the hub user so RF/mesh peers see the same
+     identity — not a web-only preference. -->
+<div class="modal" id="settingsmodal" role="dialog" aria-modal="true" aria-labelledby="settingstitle">
+  <form class="sheet" id="settingsform">
+    <h2 id="settingstitle">Settings</h2>
+    <p class="sub">Your name, QTH, and display preferences. Changes apply to your identity everywhere — web, RF, and across linked nodes.</p>
+    <div class="field">
+      <label for="set-name">Name</label>
+      <input type="text" id="set-name" name="name" autocomplete="off" placeholder="e.g. Paula">
+    </div>
+    <div class="field">
+      <label for="set-qth">QTH</label>
+      <input type="text" id="set-qth" name="qth" autocomplete="off" placeholder="e.g. Kidderminster">
+    </div>
+    <label class="toggle"><input type="checkbox" id="set-echo" name="echo"> Echo my own messages</label>
+    <label class="toggle"><input type="checkbox" id="set-bells" name="bells"> Bells (alert on activity)</label>
+    <label class="toggle"><input type="checkbox" id="set-colour" name="colour"> Colour</label>
+    <label class="toggle"><input type="checkbox" id="set-shownames" name="shownames"> Show names</label>
+    <label class="toggle"><input type="checkbox" id="set-showtime" name="showtime"> Show timestamps</label>
+    <div class="actions">
+      <span class="saved" id="set-saved" hidden>Saved</span>
+      <button type="button" class="cancel" id="set-cancel">Cancel</button>
+      <button type="submit" class="save">Save</button>
+    </div>
+  </form>
+</div>
 <main>
   <nav class="channels">
     <h2>Channels</h2>
@@ -311,6 +372,55 @@ document.getElementById('newchan').addEventListener('submit', async ev => {
   const name = inp.value.trim(); if (!name) return; inp.value = '';
   await switchTopic(name);
   msgEl.focus();
+});
+
+// --- Settings pane (S3) ---
+// A flip is the persisted identity RF/mesh peers see: it round-trips through
+// /settings, which writes name/QTH/flags into the hub user. GET prefills the form
+// from what the hub currently holds; POST persists and echoes the now-current
+// state so the form reflects the truth (not just the local guess).
+const settingsModal = document.getElementById('settingsmodal');
+const setSaved = document.getElementById('set-saved');
+const SET_BOOLS = ['echo','bells','colour','shownames','showtime'];
+
+function fillSettings(s){
+  document.getElementById('set-name').value = s.name || '';
+  document.getElementById('set-qth').value = s.qth || '';
+  SET_BOOLS.forEach(k => { document.getElementById('set-'+k).checked = !!s[k]; });
+}
+
+async function openSettings(){
+  setSaved.hidden = true;
+  try {
+    const r = await fetch('settings');
+    if (r.ok) fillSettings(await r.json());
+  } catch (e) { /* keep whatever the form has */ }
+  settingsModal.classList.add('open');
+  document.getElementById('set-name').focus();
+}
+function closeSettings(){ settingsModal.classList.remove('open'); }
+
+document.getElementById('settingsbtn').addEventListener('click', openSettings);
+document.getElementById('set-cancel').addEventListener('click', closeSettings);
+settingsModal.addEventListener('click', ev => { if (ev.target === settingsModal) closeSettings(); });
+
+document.getElementById('settingsform').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const payload = {
+    name: document.getElementById('set-name').value.trim(),
+    qth: document.getElementById('set-qth').value.trim(),
+  };
+  SET_BOOLS.forEach(k => { payload[k] = document.getElementById('set-'+k).checked; });
+  const r = await fetch('settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  if (r.ok) {
+    fillSettings(await r.json()); // reflect the persisted truth
+    setSaved.hidden = false;
+    setTimeout(closeSettings, 600);
+  } else if (r.status === 403) {
+    alert('Your access is read-only — you cannot change settings.');
+  } else {
+    alert('Could not save settings.');
+  }
 });
 </script>
 </body>
