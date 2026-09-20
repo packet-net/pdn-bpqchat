@@ -59,5 +59,27 @@ jobs:
             --title "pdn-bpqchat v${VERSION}" \
             --notes "BPQ-Chat-compatible chat node app package for the Packet.NET node (pdn) ${VERSION} — static \`.deb\`s for amd64 / arm64 / armhf. Install on a box already running the packetnet node host: \`sudo apt install ./pdn-bpqchat_${VERSION}_<arch>.deb\` (single static Go binary, no runtime needed); the app lands under /usr/share/packetnet/apps/bpqchat and you enable it from the node control panel (default off). State (bpqchat.db) lives in /var/lib/packetnet/apps/bpqchat and is preserved across upgrades."
 
+      - name: Tell the apt repo to rebuild
+        # Last, and only after gh release create has succeeded: packet-net/apt indexes whatever
+        # is on releases/latest when it runs, so dispatching before the assets exist would just
+        # make it re-index the previous release.
+        #
+        # A HARD requirement, not fire-and-forget (Tom, 2026-09-18): if this repo cannot tell
+        # packet-net/apt about the release, the build fails rather than shipping quietly with
+        # apt left stale until its next scheduled rebuild.
+        env:
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+          TAG: v${{ steps.v.outputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::APT_DISPATCH_TOKEN is not visible to this repo - cannot notify packet-net/apt"
+            exit 1
+          fi
+          # gh api --input - with a JSON body, not -f client_payload[...]=...: gh's -f does not
+          # do curl-style bracket nesting, so the nested object has to arrive as JSON.
+          payload=$(printf '{"event_type":"release-published","client_payload":{"repo":"%s","tag":"%s"}}' \
+            "$GITHUB_REPOSITORY" "$TAG")
+          printf '%s' "$payload" | gh api -X POST repos/packet-net/apt/dispatches --input -
+
       # Once a release is cut, raise the packet.net side to bundle this default-off in the node .deb
       # (stage from the published release like DAPPS) — mirror packet.net #403 (HANDOVER.md §7, W7).
