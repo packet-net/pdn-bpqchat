@@ -28,6 +28,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      # Go from go.mod, installed in the job: the donated runners have no Go of their own.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Check the tools this job needs
+        run: scripts/ci-require-tools.sh dpkg-deb:dpkg gh:gh sha256sum:coreutils
       - name: Go version
         run: go version
 

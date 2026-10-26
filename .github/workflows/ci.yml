@@ -9,9 +9,15 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
-      # Go toolchain is pinned by go.mod; the self-hosted runner has Go installed.
-      # (No setup-go: it can fail writing its install dir as the runner user — mirror
-      # pdn-convers's "use the runner's SDK" note.)
+      # Go from go.mod, installed in the job: the donated runners have no Go of their own. Cache is
+      # off on self-hosted runners, as it is for .NET, so nothing large is uploaded from them.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: ${{ runner.environment == 'github-hosted' }}
+      # The race detector needs cgo, so it needs a C compiler.
+      - name: Check the tools this job needs
+        run: scripts/ci-require-tools.sh gcc:gcc
       - name: Go version
         run: go version
       - name: Build
