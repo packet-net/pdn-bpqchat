@@ -13,7 +13,8 @@ jobs:
       # off on self-hosted runners, as it is for .NET, so nothing large is uploaded from them.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.25.x'
+          check-latest: true
           cache: ${{ runner.environment == 'github-hosted' }}
       # The race detector needs cgo, so it needs a C compiler.
       - name: Check the tools this job needs

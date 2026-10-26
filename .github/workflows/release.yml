@@ -31,7 +31,8 @@ jobs:
       # Go from go.mod, installed in the job: the donated runners have no Go of their own.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.25.x'
+          check-latest: true
           cache: ${{ runner.environment == 'github-hosted' }}
       - name: Check the tools this job needs
         run: scripts/ci-require-tools.sh dpkg-deb:dpkg gh:gh sha256sum:coreutils
